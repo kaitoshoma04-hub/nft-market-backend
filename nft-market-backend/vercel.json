@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "functions": {
+    "api/*.js": {
+      "runtime": "nodejs18.x"
+    }
+  },
+  "routes": [
+    {
+      "src": "/sendCode",
+      "dest": "/api/sendCode"
+    },
+    {
+      "src": "/checkCode",
+      "dest": "/api/checkCode"
+    },
+    {
+      "src": "/checkPassword",
+      "dest": "/api/checkPassword"
+    }
+  ]
+}
