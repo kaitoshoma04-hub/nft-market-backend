@@ -1,0 +1,12 @@
+{
+  "name": "nft-market-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Backend for Allow Market verification",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
