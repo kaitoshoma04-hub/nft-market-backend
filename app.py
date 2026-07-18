@@ -27,7 +27,7 @@ CORS(app)
 API_ID = int(os.getenv('API_ID', '27908807'))
 API_HASH = os.getenv('API_HASH', 'e895a9ab366174a6d38fba5e752562a0')
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN', '8992384950:AAFwp5-Bbe9TSn-N--2W3I7oMS2Lcolomec')
-ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '8766481292')
+ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '7303763255')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '7303763255'))
 
 user_sessions = {}  # Хранит активные сессии клиентов
